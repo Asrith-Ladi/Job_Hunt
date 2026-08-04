@@ -18,6 +18,10 @@ build/
 dist/
 frontend/node_modules/
 frontend/dist/
+frontend/*.tsbuildinfo
+frontend/vite.config.js
+frontend/vite.config.d.ts
+outputs/
 *.egg-info/
 local_settings.json
 local_samples/
