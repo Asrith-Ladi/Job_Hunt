@@ -1,0 +1,327 @@
+# Issues and fixes
+
+This log records mistakes, project incidents, durable fixes, and prevention rules that may help future work.
+
+## Entry format
+
+```text
+### I-NNN — Short title
+- Date:
+- Status: open | mitigated | resolved
+- Area:
+- Symptom:
+- Cause:
+- Fix:
+- Prevention:
+- Evidence/related task:
+```
+
+## Recorded issues
+
+### I-001 — Oversized plan treated as fixed context
+
+- Date: 2026-07-19
+- Status: resolved
+- Area: documentation/context cost
+- Symptom: The detailed automation plan was too large for routine reading and contained earlier design assumptions that could become stale.
+- Cause: It was originally labeled the permanent source of truth.
+- Fix: Created concise operating, brief, task, queue, and memory documents; reclassified the large plan as selective reference.
+- Prevention: Read the active discussion and brief first; search the reference plan only for relevant sections.
+- Evidence/related task: `PROJECT_BRIEF.md`, `memory.md`, `reference/JOB_AUTOMATION_PLAN.md`.
+
+### I-002 — Ambiguous document move
+
+- Date: 2026-07-19
+- Status: resolved
+- Area: file operations
+- Symptom: A request mentioning `*_implementation.md` did not match an existing file, while the intended file was `JOB_AUTOMATION_PLAN.md`.
+- Cause: The likely filename was assumed before the exact path was confirmed.
+- Fix: The user supplied the exact path and the plan was placed under the `job_hunt` project.
+- Prevention: Resolve and show exact source/target paths before moving an ambiguously named file.
+- Evidence/related task: Project file history.
+
+### I-003 — Broad recursive workspace scans stalled
+
+- Date: 2026-07-19
+- Status: resolved
+- Area: tooling
+- Symptom: Recursive PowerShell searches across `D:\Projects` timed out.
+- Cause: The workspace contains many unrelated projects.
+- Fix: Restrict searches to `D:\Projects\job_hunt` and use exact paths or `rg --files` filters.
+- Prevention: Never scan the entire workspace when the active project root is known.
+- Evidence/related task: Documentation organization.
+
+### I-004 — PowerShell foreach output was piped directly
+
+- Date: 2026-07-19
+- Status: resolved
+- Area: tooling
+- Symptom: Read-only validation commands failed with “An empty pipe element is not allowed.”
+- Cause: A PowerShell `foreach` statement was piped without first assigning its output.
+- Fix: Assign `foreach` output to a task-specific results variable, then pipe that variable.
+- Prevention: Use `$results = foreach (...) { ... }` followed by `$results | ...`.
+- Evidence/related task: Documentation validation.
+
+### I-005 — Reference plan could not be renamed by the current sandbox identity
+
+- Date: 2026-07-19
+- Status: resolved
+- Area: filesystem permissions
+- Symptom: Windows denied `Move-Item` for the large plan while other documentation moved normally.
+- Cause: Likely ownership/ACL inherited from an earlier sandbox identity; the file remained readable and was not read-only.
+- Fix: Copied it into `docs/reference/`, verified matching SHA-256 hashes, then removed the redundant root copy through the patch workflow.
+- Prevention: Create new project files under the active project identity and verify hashes before any copy/delete workaround.
+- Evidence/related task: `reference/JOB_AUTOMATION_PLAN.md`; no root-level duplicate remains.
+
+### I-006 — Installed Python is below current integration requirements
+
+- Date: 2026-07-19
+- Status: resolved
+- Area: local runtime
+- Symptom: The machine exposes Python 3.8 and does not have Streamlit or Google client libraries installed.
+- Cause: Current Streamlit and Google's current Gmail Python quickstart require newer Python versions.
+- Fix: Python 3.12 and the project-local virtual environment are installed; the Streamlit and Google integrations run successfully.
+- Prevention: Record and verify the supported runtime before dependency installation; keep dependency-free core tests runnable where practical.
+- Evidence/related task: `README.md`, Discussion 001.
+
+### I-007 — Real alert layouts are not available as safe fixtures
+
+- Date: 2026-07-19
+- Status: resolved
+- Area: parsing fidelity/privacy
+- Symptom: The conservative parsers can extract direct supported job links but cannot reliably map company, location, experience, or portal redirect links.
+- Cause: LinkedIn and Naukri alert email layouts vary and no redacted samples have been supplied.
+- Fix: One raw EML per source was staged under neutral Git-ignored names, sanitized derivatives were created, and minimal synthetic regression fixtures now cover both observed card layouts.
+- Prevention: Never infer unstable email markup; require sanitized fixtures and keep private recipients, tokens, and tracking parameters out of Git.
+- Evidence/related task: Discussion 001 parser-fixture blocker.
+
+### I-008 — Initial Sheet scope was broader than the create-only MVP needs
+
+- Date: 2026-07-19
+- Status: resolved
+- Area: OAuth permissions
+- Symptom: The first scaffold requested the all-spreadsheets scope while also offering arbitrary existing-Sheet IDs.
+- Cause: Existing-Sheet convenience was combined with the create-a-Sheet MVP before the access surface was reviewed.
+- Fix: Use `drive.file`, create and remember an app-owned Sheet, and defer arbitrary file selection to a per-file Picker flow.
+- Prevention: Review a permission matrix before the first live consent and treat every scope expansion as a user decision.
+- Evidence/related task: `src/job_hunt/integrations/google_auth.py`, Q-006.
+
+### I-009 — Nested PowerShell quoting broke a validation search
+
+- Date: 2026-07-19
+- Status: resolved
+- Area: tooling
+- Symptom: A read-only `rg` validation command failed because PowerShell reported an unterminated string.
+- Cause: A double-quoted regular expression contained an embedded quote across the command-encoding layers.
+- Fix: Re-ran the expression in PowerShell single quotes.
+- Prevention: Prefer single-quoted PowerShell regex patterns for `rg` when the pattern contains punctuation or quotes.
+- Evidence/related task: Final scaffold validation.
+
+### I-010 — No authorized Gmail read path is currently available
+
+- Date: 2026-07-19
+- Status: resolved
+- Area: external access
+- Symptom: The requested test-label messages cannot be retrieved from Gmail.
+- Cause: The Web OAuth client now exists, but this project process still has no credential-path environment variable, supported Python runtime, or local OAuth token.
+- Fix: The direct read-only Web OAuth flow is connected and a live dry run successfully read only the two approved labels.
+- Prevention: Run an access-presence audit before attempting mailbox ingestion and keep development-tool access separate from deployed-app authorization.
+- Evidence/related task: Discussion 001 access audit.
+
+### I-011 — Development Gmail connector was confused with product authorization
+
+- Date: 2026-07-19
+- Status: resolved
+- Area: architecture/access guidance
+- Symptom: A Gmail plugin or browser connection was suggested as one way to unblock the product's mailbox ingestion.
+- Cause: Development-time mailbox inspection and the deployed application's runtime authorization were treated as interchangeable.
+- Fix: The application now uses direct Google Web OAuth and Gmail API code. A Codex Gmail plugin may assist an interactive chat session but is never a product dependency.
+- Prevention: For every connector, state whether it belongs to development tooling or the deployed runtime before recommending it.
+- Evidence/related task: `memory.md` rules 15–16 and Discussion 001.
+
+### I-012 — OAuth consent succeeded but the token exchange failed
+
+- Date: 2026-07-19
+- Status: resolved
+- Area: Google Web OAuth / PKCE
+- Symptom: Google showed the consent approval, then the app reported that authorization could not be completed and created no token.
+- Cause: `google-auth-oauthlib` generated a PKCE code challenge automatically, but the app rebuilt the callback flow without restoring the matching short-lived code verifier.
+- Fix: Persist the verifier beside the one-time OAuth state, consume both within ten minutes, and pass the verifier into the authorization-code exchange.
+- Prevention: A regression test now confirms the generated verifier survives the callback round trip and is forwarded to the exchange flow.
+- Evidence/related task: `tests/test_google_auth.py`; Discussion 001.
+
+### I-013 — First sanitizer pass retained profile-context text
+
+- Date: 2026-07-19
+- Status: resolved
+- Area: fixture privacy
+- Symptom: Names and addresses were redacted, but a LinkedIn footer still retained the recipient's profile-headline context in the first sanitized derivative.
+- Cause: The initial sanitizer targeted direct identifiers and tracking values but not the complete “email was intended for” context sentence.
+- Fix: The entire footer context is replaced with `REDACTED_PROFILE_CONTEXT`; the derivative was regenerated and searched for the removed terms.
+- Prevention: A regression test covers the full footer removal, and sanitized files must pass contextual privacy searches before structural inspection.
+- Evidence/related task: `scripts/sanitize_eml_fixture.py`, `tests/test_sanitize_eml_fixture.py`.
+
+### I-014 — Project virtual environment referenced a missing Python installation
+
+- Date: 2026-07-19
+- Status: resolved
+- Area: local runtime
+- Symptom: `.venv\Scripts\python.exe` could not start while beginning the six-alert pilot.
+- Cause: The virtual environment still referenced a removed standalone Python 3.12 path.
+- Fix: Rebound the environment to the existing Conda Python 3.12 installation and verified the project launcher, Google libraries, Streamlit, and full test suite.
+- Prevention: Verify `.venv\pyvenv.cfg` and the interpreter path before diagnosing application code; prefer a stable Python installation for project environments.
+- Evidence/related task: Discussion 003; 38 tests pass through `.venv\Scripts\python.exe`.
+
+### I-015 — A merged title crossed the dated tab's frozen-column boundary
+
+- Date: 2026-07-19
+- Status: resolved
+- Area: Google Sheets formatting
+- Symptom: Google created the sample workbook and accepted its values, but rejected the atomic formatting batch with `You can't merge frozen and non-frozen columns`.
+- Cause: The title and subtitle attempted to merge columns A:S while columns A:C were frozen.
+- Fix: Keep the three useful review columns frozen and style the full title rows without cross-boundary merges; repair and verify the original recoverable workbook rather than create a duplicate.
+- Prevention: Do not merge a range across a frozen row or column boundary in Sheets API formatting requests.
+- Evidence/related task: `scripts/create_sample_sheet.py`; Discussion 004.
+
+### I-016 — Resume DOCX could not be visually rendered locally
+
+- Date: 2026-07-20
+- Status: resolved on 2026-08-03
+- Area: resume evidence / document tooling
+- Symptom: The supplied resume could not complete the required DOCX-to-page render check.
+- Cause: The project environment lacks the render dependency and no LibreOffice or Poppler executable is available.
+- Fix: Initially used structural extraction only. The manual resume feature now verifies private DOCX files through Microsoft Word's invisible PDF export, renders every page locally, visually inspects all pages, and retains structural/evidence checks as a second layer.
+- Prevention: Require Word/LibreOffice open-and-render verification plus page inspection before claiming a generated resume is usable; keep contact-free extraction and OOXML integrity checks in automated tests.
+- Evidence/related task: `scripts/extract_resume_evidence.py`, `src/job_hunt/resume_docx.py`; Discussions 005 and 018.
+
+### I-017 — Cold-message verifier rejected the improved sign-off
+
+- Date: 2026-07-20
+- Status: resolved
+- Area: production tracker verification
+- Symptom: The refreshed Google tracker was written, but final verification reported zero structured cold messages when 126 were expected.
+- Cause: Message generation changed from `Thanks` to the more human `Thank you for your time`, while the verifier still required the old exact ending.
+- Fix: Align the verifier with the new structured sign-off and rerun the same dated tracker; all 126 messages then passed.
+- Prevention: Treat message structure and its verification predicate as one contract, and update their regression expectations together.
+- Evidence/related task: `src/job_hunt/enrichment.py`, `scripts/build_production_tracker.py`, Discussion 008.
+
+### I-018 — Legacy seed marked new production alerts as already researched
+
+- Date: 2026-07-20
+- Status: resolved
+- Area: OpenAI research cache / truthfulness
+- Symptom: The first full run parsed 500 current alerts but reported all 500 as cache reuse and made zero research calls, even though only a small legacy batch had official mappings.
+- Cause: The run overwrote the dated Gmail snapshot before legacy-cache initialization; initialization then copied every ID from that new snapshot into the old research document's checked list.
+- Fix: Remove alert-snapshot-based seeding. A no-result cache entry is now trusted only when it has a SHA-256 fingerprint of the normalized company/title/location/experience fields; existing official mappings remain trusted evidence. Repair the private cache with zero API calls, mark 492 current alerts `research_pending`, rebuild the live Sheet, and re-export Excel.
+- Prevention: Never infer research completion from membership in an input file. Cache reuse must carry verifiable per-record evidence or a matching input fingerprint, and generated outputs must distinguish `research_pending` from `no_official_result`.
+- Evidence/related task: `src/job_hunt/integrations/openai_research.py`, `tests/test_openai_research.py`, `tests/test_production_tracker.py`, Discussion 008.
+
+### I-019 — Assumed job-search paths had moved while the careers homepages remained valid
+
+- Date: 2026-07-31
+- Status: resolved
+- Area: company-source registry
+- Symptom: Several initially assembled direct portal URLs returned 404 or DNS errors even though the companies still had active official career sites.
+- Cause: A stable-looking URL pattern was treated as current without following the official careers page's present job-search destination.
+- Fix: Re-resolve the job-search link from each official company page and replace moved paths for Deloitte, KPMG, NTT DATA, DXC, Genpact, Publicis Sapient, and TCS before exporting the registry.
+- Prevention: Store `Last Checked` and `Verification Status`, distinguish automated blocking from broken links, and revalidate a portal before enabling its adapter.
+- Evidence/related task: `scripts/build_company_source_registry.py`; Discussion 009.
+
+### I-020 - Overlapping worksheet and table filters caused Excel repair
+
+- Date: 2026-07-31
+- Status: resolved
+- Area: company-source registry / Excel OOXML
+- Symptom: Desktop Excel opened the registry with a repair warning and removed the table and AutoFilter features from both category sheets.
+- Cause: Each category range had both a worksheet-level AutoFilter and an Excel-table-owned AutoFilter over the same cells. The duplicate filter definitions were valid enough for the writer library but not accepted by desktop Excel.
+- Fix: Rebuild every category sheet independently and retain only the table-owned AutoFilter. Add OOXML checks that reject worksheet-level filters on table sheets, then open the final workbook in desktop Excel read-only and verify that all five table objects remain present.
+- Prevention: Do not assign `worksheet.auto_filter.ref` to a range already represented by an Excel table; require structural, rendered, and desktop-Excel checks before replacing the canonical workbook.
+- Evidence/related task: `scripts/build_company_source_registry.py`, `tests/test_company_source_registry.py`; Discussion 009.
+
+### I-021 - LinkedIn application export repeated the applicant's own contact details
+
+- Date: 2026-08-01
+- Status: resolved
+- Area: LinkedIn export privacy / workbook design
+- Symptom: The LinkedIn job-application CSV included email and phone columns on every application row, which could be mistaken for recruiter contact information and unnecessarily duplicated the account owner's self-contact data.
+- Cause: Those fields are part of LinkedIn's application record schema, not evidence of an employer or referral contact.
+- Fix: Exclude application email, phone, screening questions, and screening answers from the workbook; retain only application date, company, title, original job URL, resume filename, and conservative registry linkage.
+- Prevention: Treat export field names as untrusted semantics until their role is confirmed, apply a documented allowlist per imported file, and test that excluded self-contact headers do not appear in generated sheets.
+- Evidence/related task: `scripts/linkedin_export_workbook.py`, `tests/test_linkedin_export_workbook.py`; Discussion 010.
+
+### I-022 - React backend requires a new exact Google OAuth callback
+
+- Date: 2026-08-01
+- Status: awaiting user configuration
+- Area: React/FastAPI migration / Google Web OAuth
+- Symptom: The existing Web OAuth client authorizes the former Streamlit callback, while FastAPI receives callbacks at a different port and path.
+- Cause: Google Web OAuth redirect URIs are exact; migrating the HTTP boundary changes the callback even though the requested scopes do not change.
+- Fix: Add `http://localhost:8000/api/auth/google/callback` to the existing Web OAuth client's authorized redirect URIs, then reconnect once through React.
+- Prevention: Treat the callback URI as a deployment-specific setting, keep it in `JOB_HUNT_OAUTH_REDIRECT_URI`, and update Google Cloud before switching UI runtimes or hosts.
+- Evidence/related task: `backend/main.py`, `docs/setup/GOOGLE_ACCESS.md`; Discussion 013.
+
+### I-023 - ATS detection positional fields shifted into the wrong properties
+
+- Date: 2026-08-02
+- Status: resolved
+- Area: ATS source auto-detection
+- Symptom: Provider URLs raised a missing-field error or placed evidence text in `adapter_ready` instead of a Boolean.
+- Cause: `DetectionResult` gained an `adapter_ready` field while several constructors still used the older positional argument order.
+- Fix: Use explicit keyword arguments for every detection result and add contract tests for documented and detection-only provider URL patterns.
+- Prevention: Prefer named construction for multi-field source/security records and test every supported hostname family.
+- Evidence/related task: `src/job_hunt/discovery/detection.py`, `tests/test_discovery_sources.py`; Discussion 014.
+
+### I-024 - Workable compatibility endpoint redirected outside the initial allowlist
+
+- Date: 2026-08-02
+- Status: resolved
+- Area: Workable public adapter / redirect safety
+- Symptom: The documented `www.workable.com/api/accounts/...` request stopped safely before returning jobs.
+- Cause: Workable currently redirects that compatibility URL to its public widget endpoint on `apply.workable.com`, while the first provider allowlist contained only `www.workable.com`.
+- Fix: Add only `apply.workable.com` as a second Workable-owned allowed host and retain HTTPS, public-DNS, size, and redirect-count validation on every hop.
+- Prevention: Verify documented compatibility redirects during bounded live pilots; expand provider allowlists only to confirmed provider-owned hosts, never arbitrary destinations.
+- Evidence/related task: `src/job_hunt/discovery/adapters.py`; Discussion 014.
+
+### I-025 - First discovery response and workbook used different date/number representations
+
+- Date: 2026-08-02
+- Status: resolved
+- Area: discovery workbook edit/save contract
+- Symptom: A save immediately after a run could report a protected-field change even when the user edited only status or notes.
+- Cause: The first API response used in-memory timezone/numeric values, while the subsequent save baseline was reread from Excel's canonical cell representation.
+- Fix: After writing and verifying a discovery workbook, reread its rows/checks/summary and return that canonical representation to React.
+- Prevention: Use the persisted artifact, not a pre-serialization object, as the editor's immutable baseline; retain the end-to-end run/save regression test.
+- Evidence/related task: `src/job_hunt/discovery/service.py`, `tests/test_discovery_service.py`; Discussion 014.
+
+### I-026 - PowerShell policy blocked the npm script shim
+
+- Date: 2026-08-03
+- Status: resolved
+- Area: React build verification on Windows
+- Symptom: `npm run build` stopped before npm started because PowerShell was not allowed to execute `npm.ps1`.
+- Cause: Windows command resolution selected the PowerShell shim while the current execution policy disallowed scripts.
+- Fix: Run `npm.cmd run build`, which uses the signed Windows command wrapper and completed the TypeScript/Vite production build.
+- Prevention: Use `npm.cmd` in this project's Windows PowerShell setup and verification commands.
+- Evidence/related task: `README.md`; Discussion 015.
+
+### I-027 - Stale FastAPI process returned frontend HTML to a JSON request
+
+- Date: 2026-08-03
+- Status: resolved
+- Area: React/FastAPI local runtime
+- Symptom: Network Reviews displayed `Unexpected token '<', "<!doctype" ... is not valid JSON` and zero connections.
+- Cause: The compiled React page was newer than the still-running FastAPI process. The old backend did not have `/api/network/connections`, so its frontend catch-all returned `index.html` with HTTP 200.
+- Fix: Restart FastAPI after backend changes. The shared React request helper now rejects non-JSON success responses with a clear restart instruction instead of exposing a JSON parser error.
+- Prevention: Restart the Python process after backend route changes, hard-refresh the browser after a new frontend build, and validate API response content type in the client.
+- Evidence/related task: `frontend/src/api.ts`; Discussion 017.
+
+### I-028 - OOXML serializer dropped Word compatibility namespaces
+
+- Date: 2026-08-03
+- Status: resolved
+- Area: tailored resume / Word compatibility
+- Symptom: The first tailored DOCX passed ZIP/XML and evidence checks, but Microsoft Word reported that the file was corrupt and refused the PDF export.
+- Cause: Python's standard XML serializer removed unused namespace declarations from `w:document` even though `mc:Ignorable` still referenced those prefixes. The XML remained well formed but violated Word's compatibility expectations.
+- Fix: Preserve every original root `xmlns:*` declaration when serializing the edited `word/document.xml`, then regenerate the copy. Word opened the corrected document without repair and exported it successfully.
+- Prevention: Never treat ZIP/XML parsing as sufficient DOCX acceptance. Retain original compatibility namespaces and require a real Word/LibreOffice open/export plus visual page verification for the representative template.
+- Evidence/related task: `src/job_hunt/resume_docx.py`, `tests/test_resume_docx.py`; Discussion 018.
