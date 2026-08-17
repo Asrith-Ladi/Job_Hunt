@@ -2,12 +2,14 @@
 
 The OpenAI planner may write a new professional summary and rank existing evidence,
 but it never receives or rewrites contact details. The DOCX editor preserves the
-original package and formatting, changes one summary paragraph, and reorders only
-existing skill and experience-bullet paragraphs.
+original package and formatting, changes one summary paragraph, reorders existing
+skill and experience-bullet paragraphs, and may add one deterministic Skills line
+containing only user-confirmed exact JD keywords.
 """
 
 from __future__ import annotations
 
+import copy
 import hashlib
 import io
 import re
@@ -358,6 +360,41 @@ def _reorder_contiguous(records: list[_ParagraphRecord], requested: Iterable[obj
         parent.insert(insertion_index + offset, by_id[item_id])
 
 
+def _confirmed_skill_line(values: Iterable[object]) -> str:
+    skills: list[str] = []
+    normalized: set[str] = set()
+    for value in list(values or [])[:20]:
+        skill = re.sub(r"\s+", " ", str(value or "").strip())[:120]
+        key = _normalized(skill)
+        if not skill or key in normalized:
+            continue
+        if any(pattern.search(skill) for pattern in _DIRECT_CONTACT):
+            raise ResumeTemplateError("A confirmed skill contained contact information.")
+        if re.search(r"\[[A-Z][A-Z0-9_ -]+\]|\{\{.+?\}\}", skill):
+            raise ResumeTemplateError("A confirmed skill contained an unresolved placeholder.")
+        normalized.add(key)
+        skills.append(skill)
+    return f"Additional Skills: {', '.join(skills)}" if skills else ""
+
+
+def _append_confirmed_skills(
+    structure: _ResumeStructure,
+    values: Iterable[object],
+) -> str:
+    line = _confirmed_skill_line(values)
+    if not line:
+        return ""
+    parent = structure.skills[0].parent
+    if any(record.parent is not parent for record in structure.skills):
+        raise ResumeTemplateError("The Technical Skills block crosses unsupported containers.")
+    clone = copy.deepcopy(structure.skills[-1].element)
+    _replace_paragraph_text(clone, line)
+    children = list(parent)
+    insertion_index = max(children.index(record.element) for record in structure.skills) + 1
+    parent.insert(insertion_index, clone)
+    return line
+
+
 def _serialize_document(
     root: ElementTree.Element,
     original_document_xml: bytes,
@@ -407,6 +444,7 @@ def tailor_resume_docx(base_path: Path, output_path: Path, plan: dict[str, Any])
         raise ResumeTemplateError("A tailored professional summary is required.")
     _replace_paragraph_text(structure.summary.element, summary)
     _reorder_contiguous(structure.skills, plan.get("skill_order") or [])
+    _append_confirmed_skills(structure, plan.get("confirmed_skills") or [])
 
     requested_sections = {
         str(item.get("section_id") or ""): item
@@ -460,13 +498,21 @@ def verify_tailored_resume(
     if candidate_evidence["current_summary"] != expected_summary:
         raise ResumeTemplateError("The tailored summary was not written correctly.")
 
-    def evidence_texts(value: dict[str, Any]) -> list[str]:
-        texts = [item["text"] for item in value["skills"]]
-        for section in value["experience_sections"]:
-            texts.extend(item["text"] for item in section["bullets"])
-        return sorted(texts)
+    base_skills = sorted(item["text"] for item in base_evidence["skills"])
+    candidate_skills = sorted(item["text"] for item in candidate_evidence["skills"])
+    expected_skill_line = _confirmed_skill_line(plan.get("confirmed_skills") or [])
+    expected_skills = sorted(base_skills + ([expected_skill_line] if expected_skill_line else []))
+    if candidate_skills != expected_skills:
+        raise ResumeTemplateError("Tailoring changed or added unconfirmed resume skills.")
 
-    if evidence_texts(base_evidence) != evidence_texts(candidate_evidence):
-        raise ResumeTemplateError("Tailoring changed or removed verified resume evidence.")
+    def experience_texts(value: dict[str, Any]) -> list[str]:
+        return sorted(
+            item["text"]
+            for section in value["experience_sections"]
+            for item in section["bullets"]
+        )
+
+    if experience_texts(base_evidence) != experience_texts(candidate_evidence):
+        raise ResumeTemplateError("Tailoring changed or removed verified work evidence.")
     if re.search(r"\[[A-Z][A-Z0-9_ -]+\]|\{\{.+?\}\}", expected_summary):
         raise ResumeTemplateError("The tailored resume contains an unresolved placeholder.")

@@ -52,7 +52,7 @@ class AppQueryTests(unittest.TestCase):
         )
         self.assertEqual(query, "label:Job_Alerts/link_test newer_than:7d")
 
-    def test_react_source_tabs_and_dated_run_path_are_stable(self):
+    def test_react_workspace_tabs_and_dated_run_path_are_stable(self):
         with tempfile.TemporaryDirectory() as temporary:
             service = GmailWorkflowService(
                 AppPaths.from_project_root(Path(temporary)),
@@ -62,7 +62,7 @@ class AppQueryTests(unittest.TestCase):
             path = service._run_workbook_path(datetime(2026, 8, 1, 14, 30, 5))
         self.assertEqual(
             defaults["source_tabs"],
-            ["gmail", "company_portals", "ats_sources", "network_reviews"],
+            ["run_setup", "job_queue", "network_reviews"],
         )
         self.assertEqual(path.parent.name, "2026-08-01")
         self.assertEqual(path.name, "gmail_alerts_2026-08-01_143005.xlsx")

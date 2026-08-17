@@ -50,8 +50,12 @@ DISCOVERY_JOB_COLUMNS = [
     "last_seen_at",
     "source_confidence",
     "source_status",
+    "run_change_status",
     "application_status",
     "notes",
+]
+LEGACY_DISCOVERY_JOB_COLUMNS = [
+    column for column in DISCOVERY_JOB_COLUMNS if column != "run_change_status"
 ]
 
 SOURCE_CHECK_COLUMNS = [
@@ -110,6 +114,7 @@ JOB_WIDTHS = {
     "last_seen_at": 20,
     "source_confidence": 18,
     "source_status": 20,
+    "run_change_status": 20,
     "application_status": 20,
     "notes": 42,
 }
@@ -317,13 +322,13 @@ def write_discovery_workbook(
         jobs,
         f"{label} — {run_started_at.date().isoformat()}",
         (
-            "Official/public discovery snapshot. Only application status and notes are editable; "
-            "unknown dates and discovery-only links remain explicitly labelled."
+            "Current official/public matches. Run change status distinguishes new, changed, and "
+            "previously seen jobs; only application status and notes are editable."
         ),
         (
             f"Sources checked: {int(summary.get('sources_checked') or 0):,}  |  "
-            f"Jobs found: {int(summary.get('jobs_found') or 0):,}  |  "
-            f"Rows in this file: {len(normalized_rows):,}  |  "
+            f"Current matches: {len(normalized_rows):,}  |  "
+            f"New/changed: {int(summary.get('jobs_new_or_changed_this_run') or 0):,}  |  "
             f"Previously seen: {int(summary.get('jobs_unchanged_from_prior_runs') or 0):,}  |  "
             f"Warnings: {int(summary.get('warnings') or 0):,}"
         ),
@@ -358,12 +363,29 @@ def write_discovery_workbook(
                 status_range,
                 FormulaRule(formula=[formula], fill=PatternFill("solid", fgColor=color)),
             )
+        change_column = get_column_letter(
+            DISCOVERY_JOB_COLUMNS.index("run_change_status") + 1
+        )
+        change_range = f"{change_column}5:{change_column}{final_job_row}"
+        for formula, color in [
+            (f'{change_column}5="new"', "DCFCE7"),
+            (f'{change_column}5="changed"', "FEF3C7"),
+            (f'{change_column}5="previously_seen"', "E5E7EB"),
+        ]:
+            jobs.conditional_formatting.add(
+                change_range,
+                FormulaRule(formula=[formula], fill=PatternFill("solid", fgColor=color)),
+            )
     jobs.cell(4, DISCOVERY_JOB_COLUMNS.index("job_record_id") + 1).comment = Comment(
         "Stable protected identifier. Browser edits cannot change, add, or remove run rows.",
         "User",
     )
     jobs.cell(4, DISCOVERY_JOB_COLUMNS.index("date_provenance") + 1).comment = Comment(
         "Explains whether posted_at is provider-supplied or unknown. Sitemap lastmod is not publication time.",
+        "User",
+    )
+    jobs.cell(4, DISCOVERY_JOB_COLUMNS.index("run_change_status") + 1).comment = Comment(
+        "New and changed jobs are distinguished from currently active jobs already seen in an earlier run.",
         "User",
     )
 
@@ -437,17 +459,29 @@ def read_discovery_workbook(
     def read_table(sheet_name: str, columns: list[str]) -> list[dict[str, Any]]:
         sheet = workbook[sheet_name]
         headers = [sheet.cell(4, number).value for number in range(1, len(columns) + 1)]
-        if headers != columns:
+        active_columns = columns
+        legacy_jobs = False
+        if headers != columns and sheet_name == JOBS_SHEET_NAME:
+            legacy_headers = [
+                sheet.cell(4, number).value
+                for number in range(1, len(LEGACY_DISCOVERY_JOB_COLUMNS) + 1)
+            ]
+            if legacy_headers == LEGACY_DISCOVERY_JOB_COLUMNS:
+                active_columns = LEGACY_DISCOVERY_JOB_COLUMNS
+                legacy_jobs = True
+        if headers != columns and not legacy_jobs:
             raise ValueError(f"The {sheet_name} headers do not match the stable schema.")
         values: list[dict[str, Any]] = []
         for row_number in range(5, sheet.max_row + 1):
             row: dict[str, Any] = {}
-            for number, column in enumerate(columns, start=1):
+            for number, column in enumerate(active_columns, start=1):
                 value = sheet.cell(row_number, number).value
                 if isinstance(value, (date, datetime)):
                     value = value.isoformat()
                 row[column] = "" if value is None else value
             if any(row.values()):
+                if legacy_jobs:
+                    row["run_change_status"] = "new_or_changed"
                 values.append(row)
         return values
 

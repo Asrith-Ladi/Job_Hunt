@@ -56,6 +56,36 @@ class ResumeDocxTests(unittest.TestCase):
             with self.assertRaises(ResumeTemplateError):
                 extract_resume_evidence(base)
 
+    def test_tailoring_adds_only_user_confirmed_keywords_to_a_new_skills_line(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            base = create_resume_docx(root / "base.docx")
+            evidence = extract_resume_evidence(base)
+            plan = {
+                "summary": evidence["current_summary"],
+                "skill_order": [item["id"] for item in evidence["skills"]],
+                "experience_sections": [
+                    {
+                        "section_id": section["section_id"],
+                        "bullet_order": [item["id"] for item in section["bullets"]],
+                    }
+                    for section in evidence["experience_sections"]
+                ],
+                "confirmed_skills": ["Context engineering", "Evaluation pipelines"],
+            }
+
+            output = tailor_resume_docx(base, root / "tailored.docx", plan)
+            tailored = extract_resume_evidence(output)
+
+            self.assertEqual(
+                tailored["skills"][-1]["text"],
+                "Additional Skills: Context engineering, Evaluation pipelines",
+            )
+            self.assertEqual(
+                sorted(item["text"] for item in tailored["skills"][:-1]),
+                sorted(item["text"] for item in evidence["skills"]),
+            )
+
     def test_unsupported_skill_in_generated_summary_keeps_original(self):
         with tempfile.TemporaryDirectory() as temporary:
             base = create_resume_docx(Path(temporary) / "base.docx")

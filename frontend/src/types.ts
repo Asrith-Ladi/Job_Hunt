@@ -182,6 +182,8 @@ export interface JobIntelligenceStatus {
     drive_url: string;
   }>;
   reference_document_count: number;
+  confirmed_skill_evidence: ConfirmedSkillEvidence[];
+  confirmed_skill_evidence_count: number;
   library_url: string;
   message: string;
   manual_only: boolean;
@@ -193,9 +195,17 @@ export interface EligibilityAssessment {
   band: string;
   confidence: string;
   matched_skills: string[];
+  missing_skills: string[];
   gaps: string[];
   experience_reason: string;
   components: string;
+}
+
+export interface ConfirmedSkillEvidence {
+  skill: string;
+  note: string;
+  confirmed_at?: string;
+  confirmed?: boolean;
 }
 
 export interface OfficialJobCandidate {
@@ -215,6 +225,8 @@ export interface OfficialJobCandidate {
   description_summary: string;
   required_skills: string[];
   preferred_skills: string[];
+  required_skill_evidence?: Record<string, string>;
+  preferred_skill_evidence?: Record<string, string>;
   evidence_confidence: string;
   source_notes: string;
   official_match_status: string;
@@ -232,11 +244,13 @@ export interface JobAnalysis {
   model: string;
   cached: boolean;
   research_stats: Record<string, Scalar>;
+  warnings?: string[];
   baseline_resume_configured: boolean;
   privacy: {
     gmail_content_sent: boolean;
     contact_data_sent: boolean;
     connection_data_sent: boolean;
+    reference_evidence_sent: boolean;
   };
 }
 
@@ -260,6 +274,7 @@ export interface GeneratedDocumentSet {
   plan_cached: boolean;
   change_notes: string[];
   keyword_alignment: string[];
+  confirmed_skills_added: string[];
   reference_points_used: string[];
   warnings: string[];
   requires_user_review: boolean;

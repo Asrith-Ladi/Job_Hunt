@@ -26,9 +26,8 @@ from job_hunt.discovery.models import (
 )
 from job_hunt.discovery.registry import CompanyRegistryEntry, load_company_registry
 from job_hunt.discovery.state import (
-    apply_saved_user_fields,
+    classify_discovery_rows,
     normalize_discovery_state,
-    select_new_or_changed_jobs,
     update_discovery_state,
     update_user_fields,
 )
@@ -471,13 +470,12 @@ class DiscoveryWorkflowService:
             http.close()
 
         deduplicated = _deduplicate_jobs(discovered)
-        all_rows = apply_saved_user_fields(
+        current_rows, change_counts = classify_discovery_rows(
             [job.to_dict() for job in deduplicated],
             seen_state,
         )
-        export_rows, unchanged = select_new_or_changed_jobs(all_rows, seen_state)
         exported_counts = [0 for _ in checks]
-        for row in export_rows:
+        for row in current_rows:
             index = source_by_record.get(str(row.get("job_record_id") or ""))
             if index is not None and 0 <= index < len(exported_counts):
                 exported_counts[index] += 1
@@ -509,8 +507,13 @@ class DiscoveryWorkflowService:
             "sources_needing_manual_review": len(checks) - succeeded,
             "jobs_found": len(discovered),
             "jobs_after_deduplication": len(deduplicated),
-            "jobs_unchanged_from_prior_runs": unchanged,
-            "jobs_exported_this_run": len(export_rows),
+            "jobs_new_this_run": change_counts["new"],
+            "jobs_changed_since_prior_run": change_counts["changed"],
+            "jobs_new_or_changed_this_run": (
+                change_counts["new"] + change_counts["changed"]
+            ),
+            "jobs_unchanged_from_prior_runs": change_counts["previously_seen"],
+            "jobs_exported_this_run": len(current_rows),
             "warnings": warning_count,
             "keyword_filter": options.filters.keyword,
             "location_filter": options.filters.location,
@@ -526,14 +529,14 @@ class DiscoveryWorkflowService:
         write_discovery_workbook(
             local_path,
             mode=options.mode,
-            rows=export_rows,
+            rows=current_rows,
             source_checks=check_rows,
             summary=summary,
             run_started_at=run_started_at,
         )
         verify_discovery_workbook(
             local_path,
-            expected_jobs=len(export_rows),
+            expected_jobs=len(current_rows),
             expected_checks=len(check_rows),
         )
         canonical_rows, canonical_checks, canonical_summary = read_discovery_workbook(local_path)
@@ -558,7 +561,7 @@ class DiscoveryWorkflowService:
 
         updated_state = update_discovery_state(
             seen_state,
-            all_rows,
+            current_rows,
             completed_at=completed_at,
         )
         self._sync_seen_state(

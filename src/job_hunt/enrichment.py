@@ -310,6 +310,7 @@ def score_official_posting(posting: dict, profile: ResumeProfile) -> dict[str, o
         "band": band,
         "confidence": posting.get("evidence_confidence") or "medium",
         "matched_skills": matched,
+        "missing_skills": missing,
         "gaps": gaps,
         "experience_reason": experience_reason,
         "components": component_text,
@@ -341,6 +342,7 @@ def score_alert_only(alert: dict, profile: ResumeProfile) -> dict[str, object]:
         "band": "Preliminary only",
         "confidence": "low",
         "matched_skills": [],
+        "missing_skills": [],
         "gaps": gaps,
         "experience_reason": experience_reason,
         "components": (

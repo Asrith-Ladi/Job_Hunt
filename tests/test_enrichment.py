@@ -74,6 +74,7 @@ class EnrichmentTests(unittest.TestCase):
         result = score_official_posting(posting, profile)
         self.assertEqual(result["score"], 92)
         self.assertEqual(result["band"], "Strong")
+        self.assertEqual(result["missing_skills"], ["Healthcare"])
         self.assertTrue(any("healthcare" in item.lower() for item in result["gaps"]))
         self.assertIn("Experience 30/30", result["components"])
 

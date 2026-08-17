@@ -3,7 +3,6 @@
 import html
 import re
 from html.parser import HTMLParser
-from typing import List, Tuple
 
 
 PLAIN_URL_PATTERN = re.compile(r"https?://[^\s<>\"']+")

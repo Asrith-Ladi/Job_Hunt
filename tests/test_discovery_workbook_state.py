@@ -27,7 +27,7 @@ def _row(
     description="Build ML systems. 5-8 years of experience.",
     discovered_at="2026-08-01T10:00:00+05:30",
 ):
-    return DiscoveryJob.create(
+    row = DiscoveryJob.create(
         company="Example",
         title="Machine Learning Engineer",
         location="Hyderabad",
@@ -44,6 +44,8 @@ def _row(
         discovered_at=discovered_at,
         filters=DiscoveryFilters(),
     ).to_dict()
+    row["run_change_status"] = "new"
+    return row
 
 
 def _check():
@@ -104,6 +106,7 @@ class DiscoveryWorkbookStateTests(unittest.TestCase):
 
             rows, checks, loaded_summary = read_discovery_workbook(output)
             self.assertEqual(len(rows), 1)
+            self.assertEqual(rows[0]["run_change_status"], "new")
             self.assertEqual(len(checks), 1)
             self.assertEqual(loaded_summary["run_id"], "company_portals-test")
 
@@ -119,10 +122,18 @@ class DiscoveryWorkbookStateTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 validate_discovery_rows([changed_title], expected_rows=rows)
 
+            workbook = load_workbook(output)
+            legacy_jobs = workbook[JOBS_SHEET_NAME]
+            legacy_jobs.delete_cols(DISCOVERY_JOB_COLUMNS.index("run_change_status") + 1)
+            workbook.save(output)
+            legacy_rows, _, _ = read_discovery_workbook(output)
+            self.assertEqual(legacy_rows[0]["run_change_status"], "new_or_changed")
+
     def test_seen_state_preserves_first_seen_and_user_fields(self):
         first = _row(discovered_at="2026-08-01T10:00:00+05:30")
         selected, unchanged = select_new_or_changed_jobs([first], None)
         self.assertEqual(len(selected), 1)
+        self.assertEqual(selected[0]["run_change_status"], "new")
         self.assertEqual(unchanged, 0)
         state = update_discovery_state(
             None,
@@ -144,6 +155,7 @@ class DiscoveryWorkbookStateTests(unittest.TestCase):
         )
         selected, unchanged = select_new_or_changed_jobs([changed], state)
         self.assertEqual(unchanged, 0)
+        self.assertEqual(selected[0]["run_change_status"], "changed")
         self.assertEqual(selected[0]["first_seen_at"], "2026-08-01T10:00:00+05:30")
         self.assertEqual(selected[0]["last_seen_at"], "2026-08-02T10:00:00+05:30")
         self.assertEqual(selected[0]["application_status"], "shortlisted")

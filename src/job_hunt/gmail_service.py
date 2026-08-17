@@ -266,9 +266,8 @@ class GmailWorkflowService:
         root_id = str(state.get("drive_root_folder_id") or "")
         return {
             "source_tabs": [
-                "gmail",
-                "company_portals",
-                "ats_sources",
+                "run_setup",
+                "job_queue",
                 "network_reviews",
             ],
             "sources": ["linkedin", "naukri"],

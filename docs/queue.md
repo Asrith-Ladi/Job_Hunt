@@ -40,6 +40,10 @@ Alternative terminal values: `deferred`, `rejected`, `cancelled`, or `superseded
 | Q-026 | done | 1 | Add an offline Network Reviews tab with all saved LinkedIn profiles, relevant reviewer ranking, profile links, and personalized copy-ready resume-review requests | `discussions/016_network_profile_reviews.md` |
 | Q-027 | done | 1 | Show all network rows and all 18 review columns, add reusable greeting/body templates, per-row copy actions, optional outreach tracking, and explicitly requested private email display | `discussions/017_network_review_columns_and_templates.md` |
 | Q-028 | done | 1 | Add explicit per-job official-JD research, separate eligibility analysis, private baseline-resume upload, and truth-preserving tailored DOCX download/optional Drive upload | `discussions/018_streamlit_retirement_and_job_intelligence.md` |
+| Q-029 | done | 1 | Consolidate source configuration into Run Setup and provide a premium unified Job Queue that preserves source rows and groups possible duplicates until user verification | `discussions/019_unified_run_setup_and_job_queue.md` |
+| Q-030 | done | 1 | Keep all current Company Portal and ATS matches visible, classify new/changed/previously-seen rows, and support word/phrase-aware comma-separated titles or keywords globally | `discussions/020_global_current_matches_and_keyword_search.md` |
+| Q-031 | done | 1 | Resolve UUID-based Ashby jobs through the exact public feed record, prohibit related-job substitution, and ground every displayed skill in the selected JD | `discussions/021_exact_ashby_job_descriptions.md` |
+| Q-032 | done | 1 | Let the user justify exact missing JD skills, persist explicitly confirmed evidence privately, and add only those keywords to generated resume copies | `discussions/022_user_confirmed_skill_evidence.md` |
 
 ## Adding an item
 

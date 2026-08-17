@@ -55,9 +55,8 @@ class _FakeWorkflow:
     def defaults(self):
         return {
             "source_tabs": [
-                "gmail",
-                "company_portals",
-                "ats_sources",
+                "run_setup",
+                "job_queue",
                 "network_reviews",
             ]
         }
@@ -136,22 +135,44 @@ class _FakeIntelligence:
         self.generated = root / "tailored.docx"
         self.generated.write_bytes(b"tailored-resume")
         self.uploaded_bytes = b""
+        self.uploaded_name = ""
+        self.reference_files = []
         self.analyzed_job = None
+        self.generation_options = {}
 
     def status(self):
         return {
             "openai_configured": True,
             "model": "gpt-test",
             "configuration_source": "test",
+            "drive_connected": True,
+            "drive_backed": True,
             "baseline_resume_configured": True,
             "baseline_resume_name": "base_resume.docx",
+            "baseline_resume_sha256": "a" * 64,
+            "baseline_uploaded_at": "2026-08-04T12:00:00+05:30",
+            "baseline_drive_url": "https://drive.example/baseline",
+            "baseline_immutable": True,
+            "reference_documents": [],
+            "reference_document_count": 0,
+            "confirmed_skill_evidence": [],
+            "confirmed_skill_evidence_count": 0,
+            "library_url": "https://drive.example/library",
+            "message": "",
             "manual_only": True,
             "contact_data_sent_to_openai": False,
         }
 
-    def store_baseline_resume(self, content):
+    def store_baseline_resume(self, content, original_name):
         self.uploaded_bytes = bytes(content)
+        self.uploaded_name = original_name
         return self.status()
+
+    def store_reference_documents(self, files):
+        self.reference_files = [(name, bytes(content)) for name, content in files]
+        value = self.status()
+        value["reference_document_count"] = len(self.reference_files)
+        return value
 
     def analyze(self, job, *, refresh=False):
         self.analyzed_job = dict(job)
@@ -169,27 +190,49 @@ class _FakeIntelligence:
                 "gmail_content_sent": False,
                 "contact_data_sent": False,
                 "connection_data_sent": False,
+                "reference_evidence_sent": False,
             },
         }
 
-    def generate_resume(self, analysis_id, official_job_id, **options):
+    def generate_documents(self, analysis_id, official_job_id, **options):
+        self.generation_options = dict(options)
         return {
-            "resume_id": "resume_example123",
-            "file_name": self.generated.name,
+            "generation_id": "generation_example123",
             "generated_at": "2026-08-03T12:00:00+05:30",
-            "drive_url": "",
+            "artifacts": [
+                {
+                    "artifact_id": "artifact_example123",
+                    "kind": "resume_docx",
+                    "file_name": self.generated.name,
+                    "mime_type": (
+                        "application/vnd.openxmlformats-officedocument."
+                        "wordprocessingml.document"
+                    ),
+                    "drive_url": "https://drive.example/tailored",
+                    "folder_url": "https://drive.example/Resumes",
+                }
+            ],
             "model": "gpt-test",
             "plan_cached": False,
             "change_notes": [],
             "keyword_alignment": [],
+            "confirmed_skills_added": [],
+            "reference_points_used": [],
             "warnings": [],
             "requires_user_review": True,
+            "baseline_unchanged": True,
         }
 
-    def resume_path(self, resume_id):
-        if resume_id != "resume_example123":
+    def artifact(self, artifact_id):
+        if artifact_id != "artifact_example123":
             raise FileNotFoundError("missing")
-        return self.generated
+        return self.generated, {
+            "file_name": self.generated.name,
+            "mime_type": (
+                "application/vnd.openxmlformats-officedocument."
+                "wordprocessingml.document"
+            ),
+        }
 
 
 class ApiTests(unittest.TestCase):
@@ -219,7 +262,7 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(self.client.get("/api/health").json(), {"status": "ok"})
         self.assertEqual(
             self.client.get("/api/config").json()["source_tabs"],
-            ["gmail", "company_portals", "ats_sources", "network_reviews"],
+            ["run_setup", "job_queue", "network_reviews"],
         )
         self.assertTrue(self.client.get("/api/auth/google/status").json()["connected"])
 
@@ -320,22 +363,55 @@ class ApiTests(unittest.TestCase):
         )
         self.assertEqual(uploaded.status_code, 200)
         self.assertEqual(self.intelligence.uploaded_bytes, b"private-docx")
+        self.assertEqual(self.intelligence.uploaded_name, "resume.docx")
+
+        references = self.client.post(
+            "/api/job-intelligence/reference-documents",
+            files=[
+                ("files", ("WORK_HIGHLIGHTS.md", b"verified work", "text/markdown")),
+                (
+                    "files",
+                    (
+                        "project.docx",
+                        b"verified project",
+                        "application/vnd.openxmlformats-officedocument."
+                        "wordprocessingml.document",
+                    ),
+                ),
+            ],
+        )
+        self.assertEqual(references.status_code, 200)
+        self.assertEqual(
+            [name for name, _content in self.intelligence.reference_files],
+            ["WORK_HIGHLIGHTS.md", "project.docx"],
+        )
 
         generated = self.client.post(
             "/api/job-intelligence/resumes",
             json={
                 "analysis_id": "analysis_example123",
                 "official_job_id": "official_example123",
-                "upload_to_drive": False,
+                "outputs": ["resume_docx", "resume_pdf", "cover_letter"],
+                "confirmed_skill_evidence": [
+                    {
+                        "skill": "Context engineering",
+                        "note": "Designed and tested retrieval context for an internal agent workflow.",
+                        "confirmed": True,
+                    }
+                ],
             },
         )
         self.assertEqual(generated.status_code, 200)
         self.assertEqual(
-            generated.json()["resume"]["download_url"],
-            "/api/job-intelligence/resumes/resume_example123/download",
+            generated.json()["generation"]["artifacts"][0]["download_url"],
+            "/api/job-intelligence/artifacts/artifact_example123/download",
+        )
+        self.assertEqual(
+            self.intelligence.generation_options["confirmed_skill_evidence"][0]["skill"],
+            "Context engineering",
         )
         download = self.client.get(
-            "/api/job-intelligence/resumes/resume_example123/download"
+            "/api/job-intelligence/artifacts/artifact_example123/download"
         )
         self.assertEqual(download.content, b"tailored-resume")
 

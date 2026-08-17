@@ -2,8 +2,6 @@
 
 from abc import ABC, abstractmethod
 
-from job_hunt.models import AlertMessage, ParseResult
-
 
 class AlertParser(ABC):
     source = "unknown"

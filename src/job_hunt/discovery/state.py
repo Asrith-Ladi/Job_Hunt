@@ -21,6 +21,8 @@ FINGERPRINT_FIELDS = (
     "source_status",
 )
 USER_FIELDS = ("application_status", "notes")
+RUN_CHANGE_STATUS_FIELD = "run_change_status"
+RUN_CHANGE_STATUSES = ("new", "changed", "previously_seen")
 
 
 def empty_discovery_state() -> dict[str, Any]:
@@ -109,17 +111,35 @@ def select_new_or_changed_jobs(
     rows: Iterable[Mapping[str, Any]],
     state: Mapping[str, Any] | None,
 ) -> tuple[list[dict[str, Any]], int]:
+    classified, counts = classify_discovery_rows(rows, state)
+    selected = [
+        row for row in classified if row[RUN_CHANGE_STATUS_FIELD] != "previously_seen"
+    ]
+    return selected, counts["previously_seen"]
+
+
+def classify_discovery_rows(
+    rows: Iterable[Mapping[str, Any]],
+    state: Mapping[str, Any] | None,
+) -> tuple[list[dict[str, Any]], dict[str, int]]:
     normalized = normalize_discovery_state(state)
     fingerprints = normalized["job_fingerprints"]
-    selected: list[dict[str, Any]] = []
-    unchanged = 0
+    classified: list[dict[str, Any]] = []
+    counts = {status: 0 for status in RUN_CHANGE_STATUSES}
     for row in apply_saved_user_fields(rows, normalized):
         record_id = str(row.get("job_record_id") or "")
-        if not record_id or fingerprints.get(record_id) != discovery_fingerprint(row):
-            selected.append(row)
+        previous_fingerprint = fingerprints.get(record_id)
+        if not previous_fingerprint:
+            status = "new"
+        elif previous_fingerprint == discovery_fingerprint(row):
+            status = "previously_seen"
         else:
-            unchanged += 1
-    return selected, unchanged
+            status = "changed"
+        record = dict(row)
+        record[RUN_CHANGE_STATUS_FIELD] = status
+        classified.append(record)
+        counts[status] += 1
+    return classified, counts
 
 
 def update_discovery_state(

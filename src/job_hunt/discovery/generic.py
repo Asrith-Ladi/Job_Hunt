@@ -511,7 +511,7 @@ class GenericPublicDiscovery:
 
     @staticmethod
     def _passes(job: DiscoveryJob, filters: DiscoveryFilters) -> bool:
-        if not filters.matches_text(job.title, job.description):
+        if not filters.matches_text(job.title, job.description, job.department):
             return False
         if not filters.matches_location(job.location):
             return False

@@ -27,6 +27,20 @@ def _safe_client(handler):
 
 
 class DiscoverySourceTests(unittest.TestCase):
+    def test_titles_and_keywords_are_word_and_phrase_aware_alternatives(self):
+        filters = DiscoveryFilters(
+            keyword="agent, data scientist, MLOps, machine-learning, AI"
+        )
+        self.assertTrue(filters.matches_text("Agent Engineer"))
+        self.assertTrue(filters.matches_text("Agentic AI Engineer"))
+        self.assertTrue(filters.matches_text("Applied AI Engineer, Sarvam Agents"))
+        self.assertTrue(filters.matches_text("Senior Data Scientists"))
+        self.assertTrue(filters.matches_text("ML Ops Engineer"))
+        self.assertTrue(filters.matches_text("Platform Role", "Build machine-learning systems"))
+        self.assertTrue(filters.matches_text("Researcher", "", "AI Platform"))
+        self.assertFalse(DiscoveryFilters(keyword="ai").matches_text("Email Specialist"))
+        self.assertFalse(DiscoveryFilters(keyword="agent").matches_text("Engagement Manager"))
+
     def test_registry_reads_only_the_five_public_company_tables(self):
         entries = load_company_registry(REGISTRY)
         self.assertEqual(len(entries), 210)

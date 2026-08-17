@@ -47,7 +47,7 @@ class _Connection:
 
 class _Gmail:
     def defaults(self):
-        return {"source_tabs": ["gmail", "company_portals", "ats_sources"]}
+        return {"source_tabs": ["run_setup", "job_queue", "network_reviews"]}
 
     def workspace(self):
         return {"root_url": "", "source_url": ""}

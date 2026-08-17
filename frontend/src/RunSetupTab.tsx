@@ -1,0 +1,407 @@
+import { useMemo, useState } from "react";
+import type {
+  AppConfig,
+  CompanyRegistryEntry,
+  DiscoveryFiltersSettings,
+  ManualAtsSource,
+  RunSettings,
+} from "./types";
+import { SOURCE_LABELS, type WorkspaceSource } from "./workspace";
+
+export interface RunSetupState {
+  enabledSources: WorkspaceSource[];
+  gmail: RunSettings;
+  discovery: DiscoveryFiltersSettings;
+  companyIds: string[];
+  atsCompanyIds: string[];
+  manualAtsSources: ManualAtsSource[];
+}
+
+export interface SourceOutcome {
+  status: "idle" | "running" | "success" | "error";
+  message: string;
+}
+
+const SOURCE_COPY: Record<WorkspaceSource, { kicker: string; title: string; body: string }> = {
+  gmail: {
+    kicker: "Inbox signals",
+    title: "Gmail alerts",
+    body: "Read only the LinkedIn and Naukri labels you approve.",
+  },
+  company_portals: {
+    kicker: "Official employers",
+    title: "Company portals",
+    body: "Check selected public career pages from your registry.",
+  },
+  ats_sources: {
+    kicker: "Structured feeds",
+    title: "ATS sources",
+    body: "Use public Greenhouse, Lever, Workable, and SmartRecruiters postings.",
+  },
+};
+
+const EMPTY_MANUAL: ManualAtsSource = {
+  company: "",
+  provider: "greenhouse",
+  identifier: "",
+  region: "global",
+  careers_url: "",
+};
+
+function sourceCount(source: WorkspaceSource, value: RunSetupState): string {
+  if (source === "gmail") return `${value.gmail.sources.length} alert provider${value.gmail.sources.length === 1 ? "" : "s"}`;
+  if (source === "company_portals") return `${value.companyIds.length} compan${value.companyIds.length === 1 ? "y" : "ies"}`;
+  const count = value.atsCompanyIds.length + value.manualAtsSources.length;
+  return `${count} public source${count === 1 ? "" : "s"}`;
+}
+
+function CompanySelector({
+  rows,
+  selected,
+  onChange,
+  maximum,
+  emptyText,
+}: {
+  rows: CompanyRegistryEntry[];
+  selected: string[];
+  onChange: (value: string[]) => void;
+  maximum: number;
+  emptyText: string;
+}) {
+  const [query, setQuery] = useState("");
+  const needle = query.trim().toLocaleLowerCase();
+  const visible = rows.filter((item) =>
+    !needle || [item.company, item.sector, item.category, item.detection.provider]
+      .some((value) => value.toLocaleLowerCase().includes(needle)),
+  );
+
+  const toggle = (companyId: string) => {
+    if (selected.includes(companyId)) {
+      onChange(selected.filter((item) => item !== companyId));
+      return;
+    }
+    if (selected.length < maximum) onChange([...selected, companyId]);
+  };
+
+  return (
+    <div className="registry-selector">
+      <div className="registry-search-row">
+        <label className="search-field">
+          <span aria-hidden="true">⌕</span>
+          <input value={query} placeholder="Find a company or provider" onChange={(event) => setQuery(event.target.value)} />
+        </label>
+        <span>{selected.length}/{maximum} selected</span>
+      </div>
+      <div className="registry-list premium-registry-list">
+        {visible.map((item) => {
+          const checked = selected.includes(item.company_id);
+          const capped = !checked && selected.length >= maximum;
+          return (
+            <label className={`registry-item ${checked ? "selected" : ""} ${capped ? "disabled" : ""}`} key={item.company_id}>
+              <input type="checkbox" checked={checked} disabled={capped} onChange={() => toggle(item.company_id)} />
+              <span>
+                <strong>{item.company}</strong>
+                <small>{item.category} · {item.detection.provider || "generic"}</small>
+              </span>
+              <em className={item.adapter_ready ? "ready" : "fallback"}>{item.adapter_ready ? "API" : "Public"}</em>
+            </label>
+          );
+        })}
+        {!visible.length && <p className="registry-empty">{emptyText}</p>}
+      </div>
+    </div>
+  );
+}
+
+export default function RunSetupTab({
+  config,
+  googleConnected,
+  registry,
+  value,
+  onChange,
+  onRun,
+  onConnectGoogle,
+  runningSource,
+  outcomes,
+}: {
+  config: AppConfig;
+  googleConnected: boolean;
+  registry: CompanyRegistryEntry[];
+  value: RunSetupState;
+  onChange: (value: RunSetupState) => void;
+  onRun: () => void;
+  onConnectGoogle: () => void;
+  runningSource: WorkspaceSource | "";
+  outcomes: Partial<Record<WorkspaceSource, SourceOutcome>>;
+}) {
+  const [manualDraft, setManualDraft] = useState<ManualAtsSource>(EMPTY_MANUAL);
+  const enabled = new Set(value.enabledSources);
+  const running = Boolean(runningSource);
+  const hasOfficialSources = enabled.has("company_portals") || enabled.has("ats_sources");
+  const atsRegistry = useMemo(() => registry.filter((item) => item.adapter_ready), [registry]);
+
+  const patch = (next: Partial<RunSetupState>) => onChange({ ...value, ...next });
+  const toggleEnabled = (source: WorkspaceSource) => {
+    patch({
+      enabledSources: enabled.has(source)
+        ? value.enabledSources.filter((item) => item !== source)
+        : [...value.enabledSources, source],
+    });
+  };
+  const updateExperience = (minimum: number, maximum: number) => {
+    patch({
+      gmail: {
+        ...value.gmail,
+        target_experience_min_years: minimum,
+        target_experience_max_years: maximum,
+      },
+      discovery: {
+        ...value.discovery,
+        target_experience_min_years: minimum,
+        target_experience_max_years: maximum,
+      },
+    });
+  };
+  const updateRecency = (days: number) => {
+    patch({
+      gmail: { ...value.gmail, lookback_days: days },
+      discovery: { ...value.discovery, posted_within_days: days },
+    });
+  };
+  const addManualSource = () => {
+    if (!manualDraft.company.trim() || !manualDraft.identifier.trim()) return;
+    const total = value.atsCompanyIds.length + value.manualAtsSources.length;
+    if (total >= config.discovery_max_sources_per_run) return;
+    patch({ manualAtsSources: [...value.manualAtsSources, { ...manualDraft }] });
+    setManualDraft(EMPTY_MANUAL);
+  };
+
+  return (
+    <main className="product-page run-setup-page">
+      <section className="page-intro setup-intro">
+        <div>
+          <p className="eyebrow">Focused discovery run</p>
+          <h2>Choose where today’s opportunities should come from.</h2>
+          <p>One setup, independent source runs, and one queue for review. A source failure never removes another source’s results.</p>
+        </div>
+        <div className="intro-action-stack">
+          <span className={`readiness-pill ${googleConnected ? "ready" : "blocked"}`}>
+            <span />{googleConnected ? "Drive ready" : "Google connection required"}
+          </span>
+          {googleConnected ? (
+            <button className="primary-button premium-run-button" type="button" onClick={onRun} disabled={running || !value.enabledSources.length}>
+              {running ? `Running ${SOURCE_LABELS[runningSource as WorkspaceSource]}…` : `Run ${value.enabledSources.length || 0} selected source${value.enabledSources.length === 1 ? "" : "s"}`}
+            </button>
+          ) : (
+            <button className="primary-button premium-run-button" type="button" onClick={onConnectGoogle}>Connect Google</button>
+          )}
+        </div>
+      </section>
+
+      <section className="source-selector-grid" aria-label="Sources to run">
+        {(Object.keys(SOURCE_COPY) as WorkspaceSource[]).map((source) => {
+          const copy = SOURCE_COPY[source];
+          const outcome = outcomes[source];
+          return (
+            <article className={`source-selector-card ${enabled.has(source) ? "selected" : ""}`} key={source}>
+              <label>
+                <input type="checkbox" checked={enabled.has(source)} onChange={() => toggleEnabled(source)} disabled={running} />
+                <span className="source-check-indicator">✓</span>
+                <span className="source-selector-copy">
+                  <small>{copy.kicker}</small>
+                  <strong>{copy.title}</strong>
+                  <p>{copy.body}</p>
+                </span>
+              </label>
+              <footer>
+                <span>{sourceCount(source, value)}</span>
+                {outcome && outcome.status !== "idle" && <em className={outcome.status}>{outcome.message}</em>}
+              </footer>
+            </article>
+          );
+        })}
+      </section>
+
+      <section className="setup-block common-filters-block">
+        <div className="section-title-row">
+          <div>
+            <p className="eyebrow">Shared intent</p>
+            <h3>What are you looking for?</h3>
+          </div>
+          <p>{hasOfficialSources
+            ? "Official sources match any comma-separated title or keyword against available job evidence. Gmail keeps labeled alerts visible so nothing is silently lost."
+            : "Recency controls the Gmail lookback; experience controls fit labeling without hiding uncertain alerts."}</p>
+        </div>
+        <div className="common-filter-grid">
+          {hasOfficialSources && (
+            <label className="field wide-field">
+              <span>Job titles or keywords <small>comma-separated alternatives</small></span>
+              <input value={value.discovery.keyword} placeholder="agent, data scientist, GenAI, MLOps, machine learning" onChange={(event) => patch({ discovery: { ...value.discovery, keyword: event.target.value } })} />
+            </label>
+          )}
+          {hasOfficialSources && (
+            <label className="field">
+              <span>Location <small>optional</small></span>
+              <input value={value.discovery.location} placeholder="Hyderabad, Bengaluru, remote" onChange={(event) => patch({ discovery: { ...value.discovery, location: event.target.value } })} />
+            </label>
+          )}
+          <label className="field">
+            <span>Recent days</span>
+            <input type="number" min="1" max="90" value={value.discovery.posted_within_days} onChange={(event) => updateRecency(Number(event.target.value))} />
+          </label>
+          <label className="field">
+            <span>Minimum experience</span>
+            <input type="number" min="0" step="0.5" value={value.discovery.target_experience_min_years} onChange={(event) => updateExperience(Number(event.target.value), value.discovery.target_experience_max_years)} />
+          </label>
+          <label className="field">
+            <span>Maximum experience</span>
+            <input type="number" min="0" step="0.5" value={value.discovery.target_experience_max_years} onChange={(event) => updateExperience(value.discovery.target_experience_min_years, Number(event.target.value))} />
+          </label>
+          {hasOfficialSources && (
+            <label className="field">
+              <span>Max jobs per official source</span>
+              <input type="number" min="1" max="250" value={value.discovery.max_jobs_per_source} onChange={(event) => patch({ discovery: { ...value.discovery, max_jobs_per_source: Number(event.target.value) } })} />
+            </label>
+          )}
+        </div>
+        <div className="inline-options">
+          {hasOfficialSources && (
+            <label className="toggle-row">
+              <input type="checkbox" checked={value.discovery.include_unknown_dates} onChange={(event) => patch({ discovery: { ...value.discovery, include_unknown_dates: event.target.checked } })} />
+              <span>Keep official jobs with unknown publication dates</span>
+            </label>
+          )}
+          <label className="toggle-row">
+            <input
+              type="checkbox"
+              checked={value.discovery.strict_experience_filter}
+              onChange={(event) => patch({
+                discovery: { ...value.discovery, strict_experience_filter: event.target.checked },
+                gmail: { ...value.gmail, strict_experience_filter: event.target.checked },
+              })}
+            />
+            <span>Exclude roles known outside the experience range</span>
+          </label>
+        </div>
+      </section>
+
+      {enabled.has("gmail") && (
+        <section className="setup-block source-config-block">
+          <div className="section-title-row">
+            <div><p className="eyebrow">Gmail configuration</p><h3>Approved alert labels</h3></div>
+            <span className="safe-badge">Read only</span>
+          </div>
+          <div className="gmail-source-grid">
+            {(["linkedin", "naukri"] as const).map((source) => {
+              const checked = value.gmail.sources.includes(source);
+              return (
+                <article className={`mailbox-source-card ${checked ? "selected" : ""}`} key={source}>
+                  <label className="toggle-row">
+                    <input
+                      type="checkbox"
+                      checked={checked}
+                      onChange={() => patch({
+                        gmail: {
+                          ...value.gmail,
+                          sources: checked
+                            ? value.gmail.sources.filter((item) => item !== source)
+                            : [...value.gmail.sources, source],
+                        },
+                      })}
+                    />
+                    <span><strong>{source === "linkedin" ? "LinkedIn" : "Naukri"}</strong> alerts</span>
+                  </label>
+                  <label className="field">
+                    <span>Gmail label</span>
+                    <input value={value.gmail.labels_by_source[source] ?? ""} disabled={!checked} onChange={(event) => patch({ gmail: { ...value.gmail, labels_by_source: { ...value.gmail.labels_by_source, [source]: event.target.value } } })} />
+                  </label>
+                </article>
+              );
+            })}
+          </div>
+          <div className="common-filter-grid compact-grid">
+            <label className="field">
+              <span>Maximum emails</span>
+              <input type="number" min="1" max="5000" value={value.gmail.max_messages} onChange={(event) => patch({ gmail: { ...value.gmail, max_messages: Number(event.target.value) } })} />
+            </label>
+            <label className="field wide-field">
+              <span>Companies <small>optional, one per line</small></span>
+              <textarea rows={2} value={value.gmail.company_allowlist} placeholder="Wipro&#10;Accenture&#10;Google" onChange={(event) => patch({ gmail: { ...value.gmail, company_allowlist: event.target.value } })} />
+            </label>
+          </div>
+          <div className="inline-options">
+            <label className="toggle-row">
+              <input type="checkbox" checked={value.gmail.include_unmatched_companies} onChange={(event) => patch({ gmail: { ...value.gmail, include_unmatched_companies: event.target.checked } })} />
+              <span>Keep unmatched or unknown companies</span>
+            </label>
+          </div>
+          <details className="advanced compact-advanced">
+            <summary>Advanced Gmail query</summary>
+            <label className="toggle-row compact">
+              <input type="checkbox" checked={value.gmail.override_query} onChange={(event) => patch({ gmail: { ...value.gmail, override_query: event.target.checked } })} />
+              <span>Override the generated label and date query</span>
+            </label>
+            {value.gmail.override_query && <textarea rows={3} value={value.gmail.gmail_query} onChange={(event) => patch({ gmail: { ...value.gmail, gmail_query: event.target.value } })} />}
+          </details>
+        </section>
+      )}
+
+      {enabled.has("company_portals") && (
+        <section className="setup-block source-config-block">
+          <div className="section-title-row">
+            <div><p className="eyebrow">Company configuration</p><h3>Select official employers</h3></div>
+            <span className="safe-badge">Maximum {config.discovery_max_sources_per_run}</span>
+          </div>
+          <CompanySelector
+            rows={registry}
+            selected={value.companyIds}
+            onChange={(companyIds) => patch({ companyIds })}
+            maximum={config.discovery_max_sources_per_run}
+            emptyText="No registry companies match this search."
+          />
+        </section>
+      )}
+
+      {enabled.has("ats_sources") && (
+        <section className="setup-block source-config-block">
+          <div className="section-title-row">
+            <div><p className="eyebrow">ATS configuration</p><h3>Select structured public feeds</h3></div>
+            <span className="safe-badge">No API keys</span>
+          </div>
+          <CompanySelector
+            rows={atsRegistry}
+            selected={value.atsCompanyIds}
+            onChange={(atsCompanyIds) => patch({ atsCompanyIds })}
+            maximum={Math.max(0, config.discovery_max_sources_per_run - value.manualAtsSources.length)}
+            emptyText="No adapter-ready companies match this search."
+          />
+          <details className="manual-source premium-manual-source">
+            <summary>Add a public ATS identifier manually</summary>
+            <div className="common-filter-grid compact-grid">
+              <label className="field"><span>Company</span><input value={manualDraft.company} onChange={(event) => setManualDraft({ ...manualDraft, company: event.target.value })} /></label>
+              <label className="field"><span>Provider</span><select value={manualDraft.provider} onChange={(event) => setManualDraft({ ...manualDraft, provider: event.target.value as ManualAtsSource["provider"] })}><option value="greenhouse">Greenhouse</option><option value="lever">Lever</option><option value="workable">Workable</option><option value="smartrecruiters">SmartRecruiters</option></select></label>
+              <label className="field wide-field"><span>Board token, slug, subdomain, or company identifier</span><input value={manualDraft.identifier} onChange={(event) => setManualDraft({ ...manualDraft, identifier: event.target.value })} /></label>
+              <label className="field"><span>Region</span><select value={manualDraft.region} onChange={(event) => setManualDraft({ ...manualDraft, region: event.target.value as ManualAtsSource["region"] })}><option value="global">Global</option><option value="eu">EU (Lever)</option></select></label>
+            </div>
+            <button className="secondary-button" type="button" onClick={addManualSource}>Add public source</button>
+            {value.manualAtsSources.length > 0 && (
+              <div className="manual-source-chips">
+                {value.manualAtsSources.map((source, index) => (
+                  <span className="manual-chip" key={`${source.provider}-${source.identifier}-${index}`}>
+                    {source.company} · {source.provider}/{source.identifier}
+                    <button type="button" aria-label={`Remove ${source.company}`} onClick={() => patch({ manualAtsSources: value.manualAtsSources.filter((_, itemIndex) => itemIndex !== index) })}>×</button>
+                  </span>
+                ))}
+              </div>
+            )}
+          </details>
+        </section>
+      )}
+
+      <section className="run-boundary-note">
+        <strong>Safe execution boundary</strong>
+        <span>No protected LinkedIn/Naukri scraping, employer login, application submission, or automatic Luna call runs here.</span>
+      </section>
+    </main>
+  );
+}

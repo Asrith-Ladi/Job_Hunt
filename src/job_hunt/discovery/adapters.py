@@ -88,7 +88,7 @@ def _location_text(value: Any) -> str:
 
 
 def _passes(job: DiscoveryJob, filters: DiscoveryFilters) -> bool:
-    if not filters.matches_text(job.title, job.description):
+    if not filters.matches_text(job.title, job.description, job.department):
         return False
     if not filters.matches_location(job.location):
         return False
@@ -348,7 +348,8 @@ class SmartRecruitersAdapter(AtsAdapter):
                 title = clean_text(item.get("name"))
                 location = _location_text(item.get("location"))
                 posted_at = clean_text(item.get("releasedDate"))
-                if not filters.matches_text(title) or not filters.matches_location(location):
+                department = clean_text(_mapping(item.get("department")).get("label"))
+                if not filters.matches_text(title, department) or not filters.matches_location(location):
                     continue
                 if not filters.matches_date(posted_at):
                     continue
@@ -378,7 +379,7 @@ class SmartRecruitersAdapter(AtsAdapter):
                     apply_url=canonical_public_url(detail.get("applyUrl")) or official_url,
                     source_url=detail_url,
                     description=_smart_description(detail),
-                    department=clean_text(_mapping(item.get("department")).get("label")),
+                    department=department,
                     employment_type=clean_text(_mapping(item.get("typeOfEmployment")).get("label")),
                     workplace_type=(
                         "remote" if _mapping(item.get("location")).get("remote") else ""

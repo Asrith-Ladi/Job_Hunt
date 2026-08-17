@@ -325,3 +325,14 @@ This log records mistakes, project incidents, durable fixes, and prevention rule
 - Fix: Preserve every original root `xmlns:*` declaration when serializing the edited `word/document.xml`, then regenerate the copy. Word opened the corrected document without repair and exported it successfully.
 - Prevention: Never treat ZIP/XML parsing as sufficient DOCX acceptance. Retain original compatibility namespaces and require a real Word/LibreOffice open/export plus visual page verification for the representative template.
 - Evidence/related task: `src/job_hunt/resume_docx.py`, `tests/test_resume_docx.py`; Discussion 018.
+
+### I-029 - Related official job was scored as the selected job
+
+- Date: 2026-08-15
+- Status: resolved
+- Area: manual official-JD research / eligibility identity
+- Symptom: Sarvam `Agent Engineer` displayed OAuth, MCP, RAG, database, and Redis requirements from a different Sarvam role and calculated eligibility against them.
+- Cause: Company discovery retained the correct employer URL, but the later Luna web-search call could not read that exact dynamic page and was allowed to return an `active_related` opening. The UI auto-selected the related candidate without making the identity difference prominent.
+- Fix: Resolve the exact UUID through Ashby's documented public Job Postings API, extract from that description without web search, require exact-description evidence per skill, cache by exact-source fingerprint, and prohibit related candidates whenever a selected official URL is present.
+- Prevention: Treat provider job identity as a hard boundary for JD/eligibility work; related roles may be discovery suggestions only and must never supply requirements or scores for another job.
+- Evidence/related task: `src/job_hunt/integrations/ashby_postings.py`, `src/job_hunt/integrations/openai_research.py`, `src/job_hunt/job_intelligence.py`; Discussion 021.

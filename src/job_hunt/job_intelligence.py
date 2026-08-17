@@ -13,6 +13,10 @@ from typing import Any, Callable, Iterable, Mapping
 from job_hunt.document_outputs import build_cover_letter_docx, convert_docx_to_pdf
 from job_hunt.enrichment import personal_resume_profile, score_official_posting
 from job_hunt.gmail_service import AppPaths, GoogleConnectionService, TIME_ZONE
+from job_hunt.integrations.ashby_postings import (
+    ExactPostingResolution,
+    resolve_exact_ashby_posting,
+)
 from job_hunt.integrations.openai_research import (
     OfficialJobResearcher,
     OpenAIResearchError,
@@ -20,7 +24,6 @@ from job_hunt.integrations.openai_research import (
 from job_hunt.openai_config import OpenAISettings, load_openai_settings
 from job_hunt.private_io import read_json, write_json_atomic
 from job_hunt.resume_docx import (
-    ResumeTemplateError,
     extract_resume_evidence,
     extract_resume_identity,
     resume_sha256,
@@ -35,6 +38,7 @@ from job_hunt.resume_references import extract_reference_evidence
 
 
 MAX_SUMMARY_WORDS = 100
+MAX_CONFIRMED_SKILL_EVIDENCE = 20
 OUTPUT_RESUME_DOCX = "resume_docx"
 OUTPUT_RESUME_PDF = "resume_pdf"
 OUTPUT_COVER_LETTER = "cover_letter"
@@ -86,7 +90,9 @@ relevance; IDs must be copied exactly. You may reorder evidence but may not crea
 rewrite, or omit evidence bullets. change_notes must describe only truthful positioning
 changes, and keyword_alignment may contain only phrases already supported by the evidence.
 Reference points are additional verified evidence, not permission to invent new facts;
-select only their supplied IDs. If cover_letter_requested is true, write 3-4 concise,
+select only their supplied IDs. user_confirmed_skill_evidence contains professional facts
+the user explicitly confirmed; you may use those facts and exact skill labels naturally,
+but you may not expand beyond the supplied note. If cover_letter_requested is true, write 3-4 concise,
 human paragraphs (roughly 180-300 words total) for the named role and company. Do not add
 contact details, a candidate name, placeholders, or unsupported claims. If it is false,
 return an empty cover_letter_paragraphs array.
@@ -117,6 +123,77 @@ def _safe_text(value: object, limit: int) -> str:
 def _safe_filename(value: object, fallback: str) -> str:
     text = re.sub(r"[^A-Za-z0-9._-]+", "_", str(value or "").strip()).strip("._-")
     return (text[:70] or fallback).strip("._-")
+
+
+_USER_EVIDENCE_DIRECT_CONTACT = (
+    re.compile(r"\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b", re.IGNORECASE),
+    re.compile(r"\b(?:https?://|www\.)", re.IGNORECASE),
+    re.compile(r"\b(?:linkedin|github)\.com/", re.IGNORECASE),
+)
+_USER_EVIDENCE_PHONE = re.compile(r"(?:\+?\d[\d\s().-]{7,}\d)")
+
+
+def _contains_contact(value: str) -> bool:
+    if any(pattern.search(value) for pattern in _USER_EVIDENCE_DIRECT_CONTACT):
+        return True
+    return any(
+        sum(character.isdigit() for character in match.group(0)) >= 9
+        for match in _USER_EVIDENCE_PHONE.finditer(value)
+    )
+
+
+def _confirmed_skill_evidence(
+    values: Iterable[Mapping[str, Any]],
+    posting: Mapping[str, Any],
+) -> list[dict[str, str]]:
+    """Accept only explicitly confirmed evidence for exact missing JD skill labels."""
+
+    eligibility = dict(posting.get("eligibility") or {})
+    missing = [str(value).strip() for value in eligibility.get("missing_skills") or []]
+    if not missing:
+        matched = {
+            _normalize_text(value)
+            for value in eligibility.get("matched_skills") or []
+            if _normalize_text(value)
+        }
+        missing = [
+            str(value).strip()
+            for value in posting.get("required_skills") or []
+            if str(value).strip() and _normalize_text(value) not in matched
+        ]
+    allowed = {_normalize_text(value): value for value in missing if _normalize_text(value)}
+    result: list[dict[str, str]] = []
+    seen: set[str] = set()
+    for raw in list(values or [])[:MAX_CONFIRMED_SKILL_EVIDENCE]:
+        if not isinstance(raw, Mapping) or not bool(raw.get("confirmed")):
+            continue
+        supplied_skill = _safe_text(raw.get("skill"), 120)
+        key = _normalize_text(supplied_skill)
+        if not key or key not in allowed:
+            raise ValueError(
+                "Confirmed evidence may be added only for a missing skill from the selected JD."
+            )
+        note = re.sub(r"\s+", " ", _safe_text(raw.get("note"), 1200)).strip()
+        if len(note) < 20:
+            raise ValueError(
+                f"Add a short factual evidence note before confirming {allowed[key]}."
+            )
+        if _contains_contact(note):
+            raise ValueError(
+                "Remove contact details and profile/web links from confirmed evidence notes."
+            )
+        if key in seen:
+            continue
+        seen.add(key)
+        result.append(
+            {
+                "id": "confirmed_"
+                + hashlib.sha256(f"{key}\0{note}".encode("utf-8")).hexdigest()[:12],
+                "skill": allowed[key],
+                "note": note,
+            }
+        )
+    return result
 
 
 def _public_job_facts(job: Mapping[str, Any]) -> dict[str, Any]:
@@ -268,6 +345,10 @@ def _evidence_text(evidence: Mapping[str, Any]) -> str:
             for item in section.get("bullets") or []
         ]
         + [str(item.get("text") or "") for item in evidence.get("reference_points") or []]
+        + [
+            f"{item.get('skill') or ''}: {item.get('note') or ''}"
+            for item in evidence.get("user_confirmed_skill_evidence") or []
+        ]
     )
 
 
@@ -440,6 +521,14 @@ def normalize_resume_plan(
             keyword_alignment.append(text)
         if len(keyword_alignment) >= 12:
             break
+    confirmed_skills = [
+        _safe_text(item.get("skill"), 120)
+        for item in evidence.get("user_confirmed_skill_evidence") or []
+        if _safe_text(item.get("skill"), 120)
+    ][:MAX_CONFIRMED_SKILL_EVIDENCE]
+    for skill in confirmed_skills:
+        if skill not in keyword_alignment:
+            keyword_alignment.append(skill)
     change_notes = []
     for value in raw.get("change_notes") or []:
         text = _safe_text(value, 240)
@@ -447,6 +536,14 @@ def normalize_resume_plan(
             change_notes.append(text)
         if len(change_notes) >= 8:
             break
+    if confirmed_skills:
+        confirmed_change_note = (
+            "Added user-confirmed JD keyword(s) to Technical Skills: "
+            + ", ".join(confirmed_skills)
+            + "."
+        )
+        if confirmed_change_note not in change_notes:
+            change_notes.append(confirmed_change_note)
 
     cover_letter_paragraphs: list[str] = []
     if cover_letter_requested:
@@ -476,6 +573,7 @@ def normalize_resume_plan(
         "reference_evidence_ids": reference_evidence_ids,
         "cover_letter_paragraphs": cover_letter_paragraphs,
         "keyword_alignment": keyword_alignment,
+        "confirmed_skills": confirmed_skills,
         "change_notes": change_notes,
         "validation_warnings": warnings,
     }
@@ -492,6 +590,9 @@ class JobIntelligenceService:
         settings_loader: Callable[[Path], OpenAISettings] = load_openai_settings,
         researcher_factory: Callable[[str, str], OfficialJobResearcher] | None = None,
         planner_factory: Callable[[str, str], ResumePlanner] | None = None,
+        exact_posting_resolver: (
+            Callable[[Mapping[str, Any]], ExactPostingResolution] | None
+        ) = None,
         resume_library=None,
         pdf_converter=convert_docx_to_pdf,
         cover_letter_builder=build_cover_letter_docx,
@@ -505,6 +606,7 @@ class JobIntelligenceService:
         self.planner_factory = planner_factory or (
             lambda key, model: ResumePlanner(key, model=model)
         )
+        self.exact_posting_resolver = exact_posting_resolver or resolve_exact_ashby_posting
         self.resume_library = resume_library or DriveResumeLibrary(paths, google_connection)
         self.pdf_converter = pdf_converter
         self.cover_letter_builder = cover_letter_builder
@@ -515,6 +617,127 @@ class JobIntelligenceService:
         self.output_root = self.root / "generated_documents"
         self.artifact_index_path = self.root / "artifact_index.json"
         self._lock = threading.Lock()
+
+    @staticmethod
+    def _exact_research(
+        facts: Mapping[str, Any],
+        resolution: ExactPostingResolution,
+        existing: Mapping[str, Any],
+        researcher: OfficialJobResearcher,
+        *,
+        refresh: bool,
+    ) -> tuple[dict[str, Any], list[str]]:
+        """Merge an exact Ashby posting into the shared private research cache."""
+
+        research = dict(existing or {})
+        job_id = str(facts.get("job_record_id") or "")
+        postings_by_id = {
+            str(item.get("official_job_id") or ""): dict(item)
+            for item in research.get("postings") or []
+            if item.get("official_job_id")
+        }
+        matches = {
+            str(alert_id): [dict(item) for item in rows]
+            for alert_id, rows in (research.get("matches") or {}).items()
+        }
+        exact_fingerprints = {
+            str(alert_id): str(value)
+            for alert_id, value in (
+                research.get("exact_posting_fingerprints") or {}
+            ).items()
+            if value
+        }
+        checked_fingerprints = {
+            str(alert_id): str(value)
+            for alert_id, value in (
+                research.get("checked_alert_fingerprints") or {}
+            ).items()
+            if value
+        }
+        checked_ids = {
+            str(value) for value in research.get("checked_alert_ids") or [] if value
+        }
+        warnings = [resolution.warning] if resolution.warning else []
+        source = dict(resolution.posting or {})
+        source_fingerprint = str(source.get("source_fingerprint") or "")
+        cached_posting = None
+        if source and not refresh and exact_fingerprints.get(job_id) == source_fingerprint:
+            for mapping in matches.get(job_id, []):
+                candidate = postings_by_id.get(str(mapping.get("official_job_id") or ""))
+                if candidate and str(candidate.get("exact_source_fingerprint") or "") == (
+                    source_fingerprint
+                ):
+                    cached_posting = candidate
+                    break
+
+        api_calls = 0
+        if source:
+            posting = cached_posting
+            if posting is None:
+                posting = researcher.extract_exact_posting(facts, source)
+                api_calls = 1
+            official_id = str(posting.get("official_job_id") or "")
+            postings_by_id[official_id] = dict(posting)
+            matches[job_id] = [
+                {
+                    "official_job_id": official_id,
+                    "match_status": "exact_candidate",
+                    "match_score": 100,
+                    "match_reason": (
+                        "Exact Ashby job UUID matched the selected official employer URL."
+                    ),
+                }
+            ]
+            exact_fingerprints[job_id] = source_fingerprint
+        else:
+            matches.pop(job_id, None)
+            exact_fingerprints.pop(job_id, None)
+
+        fingerprint_payload = json.dumps(
+            {
+                "company": facts.get("company"),
+                "title": facts.get("title"),
+                "official_url": facts.get("official_url"),
+                "policy": "exact_only",
+                "exact_source": source_fingerprint,
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+        )
+        checked_fingerprints[job_id] = hashlib.sha256(
+            fingerprint_payload.encode("utf-8")
+        ).hexdigest()
+        checked_ids.add(job_id)
+        today = datetime.now(TIME_ZONE).date().isoformat()
+        research.update(
+            {
+                "verified_at": today,
+                "research_model": researcher.model,
+                "checked_alert_ids": sorted(checked_ids),
+                "checked_alert_fingerprints": dict(sorted(checked_fingerprints.items())),
+                "exact_posting_fingerprints": dict(sorted(exact_fingerprints.items())),
+                "postings": sorted(
+                    postings_by_id.values(),
+                    key=lambda item: (
+                        _normalize_text(item.get("company")),
+                        _normalize_text(item.get("title")),
+                        item.get("official_url") or "",
+                    ),
+                ),
+                "matches": dict(sorted(matches.items())),
+                "research_stats": {
+                    "current_alerts": 1,
+                    "alerts_submitted": 0,
+                    "alerts_checked_without_search": 0 if source else 1,
+                    "api_calls": api_calls,
+                    "alerts_reused_from_cache": int(cached_posting is not None),
+                    "alerts_waiting_for_future_run": 0,
+                    "exact_feed_matches": int(bool(source)),
+                    "related_candidates_allowed": 0,
+                },
+            }
+        )
+        return research, warnings
 
     def _settings(self) -> OpenAISettings:
         return self.settings_loader(self.paths.project_root)
@@ -584,12 +807,28 @@ class JobIntelligenceService:
         try:
             existing = read_json(self.research_cache_path, default={}) or {}
             researcher = self.researcher_factory(settings.api_key, settings.model)
-            research = researcher.research(
-                [facts],
-                existing,
-                refresh_existing=bool(refresh),
-                max_new_alerts=1,
+            resolution = (
+                self.exact_posting_resolver(facts)
+                if facts.get("official_url")
+                else ExactPostingResolution(False)
             )
+            analysis_warnings: list[str] = []
+            if resolution.recognized:
+                research, analysis_warnings = self._exact_research(
+                    facts,
+                    resolution,
+                    existing,
+                    researcher,
+                    refresh=bool(refresh),
+                )
+            else:
+                research = researcher.research(
+                    [facts],
+                    existing,
+                    refresh_existing=bool(refresh),
+                    max_new_alerts=1,
+                    exact_only=bool(facts.get("official_url")),
+                )
             write_json_atomic(self.research_cache_path, research)
             postings = {
                 str(item.get("official_job_id") or ""): dict(item)
@@ -629,6 +868,7 @@ class JobIntelligenceService:
                 "model": settings.model,
                 "cached": int(stats.get("api_calls") or 0) == 0,
                 "research_stats": stats,
+                "warnings": analysis_warnings,
                 "baseline_resume_configured": bool(
                     library_status.get("baseline_resume_configured")
                 ),
@@ -666,12 +906,14 @@ class JobIntelligenceService:
         official_job_id: str,
         base_resume: Path,
         reference_digest: str,
+        confirmed_evidence_digest: str,
         model: str,
         cover_letter_requested: bool,
     ) -> str:
         value = (
             f"{analysis_id}\0{official_job_id}\0{resume_sha256(base_resume)}\0"
-            f"{reference_digest}\0{model}\0{int(cover_letter_requested)}"
+            f"{reference_digest}\0{confirmed_evidence_digest}\0{model}\0"
+            f"{int(cover_letter_requested)}"
         )
         return hashlib.sha256(value.encode("utf-8")).hexdigest()
 
@@ -695,10 +937,15 @@ class JobIntelligenceService:
         official_job_id: str,
         *,
         outputs: Iterable[str],
+        confirmed_skill_evidence: Iterable[Mapping[str, Any]] = (),
         refresh_plan: bool = False,
     ) -> dict[str, Any]:
         analysis = self._load_analysis(analysis_id)
         posting = self._selected_posting(analysis, str(official_job_id).strip())
+        confirmed_evidence = _confirmed_skill_evidence(
+            confirmed_skill_evidence,
+            posting,
+        )
         requested_outputs = self._requested_outputs(outputs)
         cover_letter_requested = OUTPUT_COVER_LETTER in requested_outputs
         settings = self._settings()
@@ -717,12 +964,23 @@ class JobIntelligenceService:
                 posting,
             )
             evidence["reference_points"] = reference_points
+            evidence["user_confirmed_skill_evidence"] = confirmed_evidence
+            if confirmed_evidence:
+                self.resume_library.store_confirmed_skill_evidence(confirmed_evidence)
             eligibility = dict(posting.get("eligibility") or {})
+            confirmed_evidence_digest = hashlib.sha256(
+                json.dumps(
+                    confirmed_evidence,
+                    ensure_ascii=False,
+                    sort_keys=True,
+                ).encode("utf-8")
+            ).hexdigest()
             plan_key = self._plan_cache_key(
                 analysis_id,
                 str(official_job_id),
                 base_resume,
                 str(inputs.get("reference_digest") or ""),
+                confirmed_evidence_digest,
                 settings.model,
                 cover_letter_requested,
             )
@@ -848,6 +1106,7 @@ class JobIntelligenceService:
                 "plan_cached": plan_cached,
                 "change_notes": list(plan.get("change_notes") or []),
                 "keyword_alignment": list(plan.get("keyword_alignment") or []),
+                "confirmed_skills_added": list(plan.get("confirmed_skills") or []),
                 "reference_points_used": references_used,
                 "warnings": warnings,
                 "requires_user_review": True,

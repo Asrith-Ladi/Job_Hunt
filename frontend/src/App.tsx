@@ -1,66 +1,42 @@
 import { useEffect, useMemo, useState } from "react";
 import { api } from "./api";
-import DiscoveryTab from "./DiscoveryTab";
 import JobIntelligencePanel from "./JobIntelligencePanel";
+import JobQueueTab from "./JobQueueTab";
 import NetworkReviewsTab from "./NetworkReviewsTab";
-import type { AppConfig, GoogleStatus, JobRow, RunArtifact, RunSettings, Scalar } from "./types";
+import RunSetupTab, { type RunSetupState, type SourceOutcome } from "./RunSetupTab";
+import type {
+  AppConfig,
+  CompanyRegistryEntry,
+  DiscoveryFiltersSettings,
+  DiscoveryRunArtifact,
+  GoogleStatus,
+  RunArtifact,
+  RunSettings,
+  Scalar,
+} from "./types";
+import {
+  SOURCE_LABELS,
+  flattenRuns,
+  scalarText,
+  type QueueItem,
+  type WorkspaceRuns,
+  type WorkspaceSource,
+} from "./workspace";
 
-type Tab = "gmail" | "company_portals" | "ats_sources" | "network_reviews";
+type ProductTab = "run_setup" | "job_queue" | "network_reviews";
+type Notice = { kind: "success" | "error" | "info"; text: string };
 
-const DEFAULT_VISIBLE_COLUMNS = [
-  "alert_source",
-  "company",
-  "title",
-  "location",
-  "years_of_experience",
-  "experience_fit",
-  "source_url",
-  "official_url",
-  "referral_count",
-  "referral_name",
-  "referral_position",
-  "referral_eligibility",
-  "referral_message",
-  "application_status",
-  "notes",
-];
+function tabFromLocation(): ProductTab {
+  const requested = new URLSearchParams(window.location.search).get("tab");
+  return requested === "job_queue" || requested === "network_reviews" ? requested : "run_setup";
+}
 
-const COLUMN_LABELS: Record<string, string> = {
-  alert_source: "Source",
-  company: "Company",
-  title: "Job title",
-  location: "Location",
-  years_of_experience: "Experience",
-  experience_fit: "5–8 year fit",
-  source_url: "Alert job",
-  official_url: "Official job",
-  application_status: "Application status",
-  notes: "Notes",
-  email_received_at: "Email received",
-  alert_posted_at: "Alert posted",
-  parse_status: "Parse status",
-  parse_confidence: "Parse confidence",
-  company_match: "Company match",
-  experience_min_years: "Minimum years",
-  experience_max_years: "Maximum years",
-  experience_source: "Experience source",
-  email_subject: "Email subject",
-  first_seen_at: "First seen",
-  last_seen_at: "Last seen",
-  job_record_id: "Job record ID",
-  gmail_message_id: "Gmail message ID",
-  evidence_message_ids: "Evidence message IDs",
-  owner_id: "Owner",
-  referral_count: "Referral candidates",
-  referral_name: "Suggested referral",
-  referral_position: "Connection role",
-  referral_profile_url: "LinkedIn profile",
-  referral_match_status: "Referral match",
-  referral_eligibility: "Why my profile may fit",
-  referral_message: "LinkedIn referral request",
-};
+function summaryNumber(value: Scalar | undefined, fallback: number): number {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : fallback;
+}
 
-const EMPTY_SETTINGS: RunSettings = {
+const EMPTY_GMAIL_SETTINGS: RunSettings = {
   sources: ["linkedin", "naukri"],
   labels_by_source: {
     linkedin: "Job_Alerts/LinkedIn",
@@ -77,120 +53,132 @@ const EMPTY_SETTINGS: RunSettings = {
   override_query: false,
 };
 
-function valueText(value: Scalar | undefined): string {
-  if (value === null || value === undefined) return "";
-  return String(value);
-}
+const EMPTY_DISCOVERY_SETTINGS: DiscoveryFiltersSettings = {
+  keyword: "",
+  location: "",
+  posted_within_days: 30,
+  include_unknown_dates: true,
+  max_jobs_per_source: 100,
+  target_experience_min_years: 5,
+  target_experience_max_years: 8,
+  strict_experience_filter: false,
+};
 
-function labelFor(column: string): string {
-  return COLUMN_LABELS[column] ?? column.replaceAll("_", " ");
-}
+const EMPTY_SETUP: RunSetupState = {
+  enabledSources: ["gmail"],
+  gmail: EMPTY_GMAIL_SETTINGS,
+  discovery: EMPTY_DISCOVERY_SETTINGS,
+  companyIds: [],
+  atsCompanyIds: [],
+  manualAtsSources: [],
+};
 
-function metric(summary: Record<string, Scalar>, key: string): number {
-  const value = Number(summary[key] ?? 0);
-  return Number.isFinite(value) ? value : 0;
-}
-
-function generatedQuery(settings: RunSettings): string {
-  const labels = settings.sources
-    .map((source) => settings.labels_by_source[source]?.trim())
-    .filter(Boolean)
-    .map((label) => `label:${label}`);
-  const labelQuery = labels.length > 1 ? `{${labels.join(" ")}}` : labels[0] ?? "";
-  return labelQuery ? `${labelQuery} newer_than:${settings.lookback_days}d` : "";
-}
-
-async function copyText(value: string): Promise<void> {
-  if (navigator.clipboard?.writeText) {
-    await navigator.clipboard.writeText(value);
-    return;
-  }
-  const textarea = document.createElement("textarea");
-  textarea.value = value;
-  textarea.style.position = "fixed";
-  textarea.style.opacity = "0";
-  document.body.appendChild(textarea);
-  textarea.focus();
-  textarea.select();
-  try {
-    if (!document.execCommand("copy")) throw new Error("Copy is unavailable in this browser.");
-  } finally {
-    document.body.removeChild(textarea);
-  }
-}
+const EMPTY_RUNS: WorkspaceRuns = {
+  gmail: null,
+  company_portals: null,
+  ats_sources: null,
+};
 
 function App() {
-  const [activeTab, setActiveTab] = useState<Tab>("gmail");
+  const [activeTab, setActiveTab] = useState<ProductTab>(tabFromLocation);
   const [config, setConfig] = useState<AppConfig | null>(null);
   const [google, setGoogle] = useState<GoogleStatus | null>(null);
-  const [settings, setSettings] = useState<RunSettings>(EMPTY_SETTINGS);
-  const [run, setRun] = useState<RunArtifact | null>(null);
-  const [rows, setRows] = useState<JobRow[]>([]);
-  const [visibleColumns, setVisibleColumns] = useState<string[]>(DEFAULT_VISIBLE_COLUMNS);
-  const [search, setSearch] = useState("");
-  const [sourceFilter, setSourceFilter] = useState("all");
-  const [statusFilter, setStatusFilter] = useState("all");
-  const [loading, setLoading] = useState(true);
-  const [running, setRunning] = useState(false);
+  const [registry, setRegistry] = useState<CompanyRegistryEntry[]>([]);
+  const [setup, setSetup] = useState<RunSetupState>(EMPTY_SETUP);
+  const [runs, setRuns] = useState<WorkspaceRuns>(EMPTY_RUNS);
+  const [dirtySources, setDirtySources] = useState<Set<WorkspaceSource>>(new Set());
+  const [runningSource, setRunningSource] = useState<WorkspaceSource | "">("");
+  const [outcomes, setOutcomes] = useState<Partial<Record<WorkspaceSource, SourceOutcome>>>({});
   const [saving, setSaving] = useState(false);
-  const [dirty, setDirty] = useState(false);
-  const [intelligenceJob, setIntelligenceJob] = useState<JobRow | null>(null);
-  const [notice, setNotice] = useState<{ kind: "success" | "error" | "info"; text: string } | null>(null);
+  const [selectedJob, setSelectedJob] = useState<QueueItem | null>(null);
+  const [notice, setNotice] = useState<Notice | null>(null);
+  const [loading, setLoading] = useState(true);
 
   useEffect(() => {
     const callbackState = new URLSearchParams(window.location.search).get("google");
     if (callbackState) {
-      const message =
-        callbackState === "connected"
-          ? { kind: "success" as const, text: "Google connected successfully." }
-          : callbackState === "denied"
-            ? { kind: "info" as const, text: "Google authorization was cancelled. No mailbox data was read." }
-            : { kind: "error" as const, text: "Google authorization could not be completed. Please reconnect." };
-      setNotice(message);
-      window.history.replaceState({}, "", window.location.pathname);
+      const callbackNotice: Notice = callbackState === "connected"
+        ? { kind: "success", text: "Google connected successfully." }
+        : callbackState === "denied"
+          ? { kind: "info", text: "Google authorization was cancelled. No mailbox data was read." }
+          : { kind: "error", text: "Google authorization could not be completed. Reconnect and try again." };
+      setNotice(callbackNotice);
+      const cleanUrl = new URL(window.location.href);
+      cleanUrl.searchParams.delete("google");
+      cleanUrl.searchParams.set("tab", activeTab);
+      window.history.replaceState({}, "", `${cleanUrl.pathname}${cleanUrl.search}`);
     }
 
-    Promise.all([api.config(), api.googleStatus(), api.latestRun()])
-      .then(([appConfig, googleStatus, latest]) => {
+    api.config()
+      .then(async (appConfig) => {
         setConfig(appConfig);
-        setGoogle(googleStatus);
-        setSettings((current) => ({
+        setSetup((current) => ({
           ...current,
-          labels_by_source: appConfig.labels_by_source,
-          lookback_days: appConfig.lookback_days,
-          max_messages: appConfig.max_messages,
-          target_experience_min_years: appConfig.target_experience_min_years,
-          target_experience_max_years: appConfig.target_experience_max_years,
-          include_unmatched_companies: appConfig.include_unmatched_companies,
-          strict_experience_filter: appConfig.strict_experience_filter,
+          gmail: {
+            ...current.gmail,
+            labels_by_source: appConfig.labels_by_source,
+            lookback_days: appConfig.lookback_days,
+            max_messages: appConfig.max_messages,
+            target_experience_min_years: appConfig.target_experience_min_years,
+            target_experience_max_years: appConfig.target_experience_max_years,
+            include_unmatched_companies: appConfig.include_unmatched_companies,
+            strict_experience_filter: appConfig.strict_experience_filter,
+          },
+          discovery: {
+            ...current.discovery,
+            posted_within_days: appConfig.lookback_days,
+            target_experience_min_years: appConfig.target_experience_min_years,
+            target_experience_max_years: appConfig.target_experience_max_years,
+            strict_experience_filter: appConfig.strict_experience_filter,
+          },
         }));
-        if (latest.run) {
-          setRun(latest.run);
-          setRows(latest.run.rows);
+
+        const startupResults = await Promise.allSettled([
+          api.googleStatus(),
+          api.registry(),
+          api.latestRun(),
+          api.latestDiscoveryRun("company_portals"),
+          api.latestDiscoveryRun("ats_sources"),
+        ] as const);
+        const [googleResult, registryResult, gmailResult, companyResult, atsResult] = startupResults;
+        if (googleResult.status === "fulfilled") setGoogle(googleResult.value);
+        if (registryResult.status === "fulfilled") setRegistry(registryResult.value.companies);
+        setRuns({
+          gmail: gmailResult.status === "fulfilled" ? gmailResult.value.run : null,
+          company_portals: companyResult.status === "fulfilled" ? companyResult.value.run : null,
+          ats_sources: atsResult.status === "fulfilled" ? atsResult.value.run : null,
+        });
+
+        const unavailable = [
+          googleResult.status === "rejected" ? "Google status" : "",
+          registryResult.status === "rejected" ? "company registry" : "",
+          gmailResult.status === "rejected" ? "Gmail run" : "",
+          companyResult.status === "rejected" ? "Company Portal run" : "",
+          atsResult.status === "rejected" ? "ATS run" : "",
+        ].filter(Boolean);
+        if (unavailable.length) {
+          setNotice({
+            kind: "info",
+            text: `${unavailable.join(", ")} could not be loaded. The available workspace remains usable.`,
+          });
         }
       })
-      .catch((error: Error) => setNotice({ kind: "error", text: error.message }))
+      .catch((error: Error) => {
+        setNotice({ kind: "error", text: `The application configuration could not be loaded: ${error.message}` });
+      })
       .finally(() => setLoading(false));
   }, []);
 
-  const filteredRows = useMemo(() => {
-    const needle = search.trim().toLocaleLowerCase();
-    return rows.filter((row) => {
-      if (sourceFilter !== "all" && valueText(row.alert_source) !== sourceFilter) return false;
-      if (statusFilter !== "all" && valueText(row.application_status) !== statusFilter) return false;
-      if (!needle) return true;
-      return [
-        row.company,
-        row.title,
-        row.location,
-        row.years_of_experience,
-        row.referral_name,
-        row.referral_position,
-      ]
-        .map(valueText)
-        .some((value) => value.toLocaleLowerCase().includes(needle));
-    });
-  }, [rows, search, sourceFilter, statusFilter]);
+  const queueCount = useMemo(() => flattenRuns(runs).length, [runs]);
+  const currentRunCount = useMemo(() => Object.values(runs).filter(Boolean).length, [runs]);
+
+  const navigateTo = (tab: ProductTab) => {
+    setActiveTab(tab);
+    const url = new URL(window.location.href);
+    url.searchParams.delete("google");
+    url.searchParams.set("tab", tab);
+    window.history.replaceState({}, "", `${url.pathname}${url.search}`);
+  };
 
   const connectGoogle = async () => {
     try {
@@ -202,584 +190,270 @@ function App() {
     }
   };
 
-  const runGmail = async () => {
-    if (!settings.sources.length) {
-      setNotice({ kind: "error", text: "Select at least one Gmail alert source." });
+  const validateSetup = (): string => {
+    if (!setup.enabledSources.length) return "Select at least one source to run.";
+    if (setup.enabledSources.includes("gmail") && !setup.gmail.sources.length) {
+      return "Choose LinkedIn, Naukri, or both for the Gmail source.";
+    }
+    if (setup.enabledSources.includes("company_portals") && !setup.companyIds.length) {
+      return "Select at least one company for the Company Portal run.";
+    }
+    if (
+      setup.enabledSources.includes("ats_sources")
+      && setup.atsCompanyIds.length + setup.manualAtsSources.length === 0
+    ) {
+      return "Select or add at least one public ATS source.";
+    }
+    if (setup.discovery.target_experience_max_years < setup.discovery.target_experience_min_years) {
+      return "Maximum experience must be at least the minimum experience.";
+    }
+    return "";
+  };
+
+  const runSelectedSources = async () => {
+    const validation = validateSetup();
+    if (validation) {
+      setNotice({ kind: "error", text: validation });
       return;
     }
-    if (dirty && !window.confirm("This will replace the unsaved on-screen edits with a new Gmail run. Continue?")) {
+    if (!google?.connected) {
+      setNotice({ kind: "error", text: "Connect Google before creating Drive run artifacts." });
       return;
     }
-    setRunning(true);
-    setNotice({ kind: "info", text: "Reading approved Gmail labels and preparing the Drive workbook…" });
-    try {
-      const response = await api.runGmail(settings);
-      setRun(response.run);
-      setRows(response.run.rows);
-      setDirty(false);
+    const dirtySelected = setup.enabledSources.some((source) => dirtySources.has(source));
+    if (dirtySelected && !window.confirm("Running selected sources will replace their unsaved on-screen edits. Continue?")) return;
+
+    const succeeded: WorkspaceSource[] = [];
+    const failed: WorkspaceSource[] = [];
+    setNotice({ kind: "info", text: "Running each selected source independently and preserving completed results…" });
+
+    for (const source of setup.enabledSources) {
+      setRunningSource(source);
+      setOutcomes((current) => ({ ...current, [source]: { status: "running", message: "Running" } }));
+      try {
+        let run: RunArtifact | DiscoveryRunArtifact;
+        if (source === "gmail") {
+          run = (await api.runGmail(setup.gmail)).run;
+        } else if (source === "company_portals") {
+          run = (await api.runDiscovery(source, setup.companyIds, [], setup.discovery)).run;
+        } else {
+          run = (await api.runDiscovery(source, setup.atsCompanyIds, setup.manualAtsSources, setup.discovery)).run;
+        }
+        setRuns((current) => ({ ...current, [source]: run }));
+        setDirtySources((current) => {
+          const next = new Set(current);
+          next.delete(source);
+          return next;
+        });
+        succeeded.push(source);
+        const currentMatches = summaryNumber(
+          run.summary.jobs_after_deduplication,
+          run.rows.length,
+        );
+        const newOrChanged = summaryNumber(
+          run.summary.jobs_new_or_changed_this_run,
+          run.rows.length,
+        );
+        setOutcomes((current) => ({
+          ...current,
+          [source]: {
+            status: "success",
+            message: source === "gmail"
+              ? `${run.rows.length} rows ready`
+              : `${currentMatches} matches · ${newOrChanged} new/changed`,
+          },
+        }));
+      } catch (error) {
+        failed.push(source);
+        setOutcomes((current) => ({
+          ...current,
+          [source]: { status: "error", message: (error as Error).message },
+        }));
+      }
+    }
+
+    setRunningSource("");
+    if (succeeded.length) {
+      navigateTo("job_queue");
       setNotice({
-        kind: "success",
-        text: `Gmail run completed. ${response.run.rows.length} new or changed jobs are ready to review.`,
+        kind: failed.length ? "info" : "success",
+        text: `${succeeded.map((source) => SOURCE_LABELS[source]).join(", ")} completed${failed.length ? `; ${failed.map((source) => SOURCE_LABELS[source]).join(", ")} needs attention.` : ". The unified queue is ready."}`,
       });
-    } catch (error) {
-      setNotice({ kind: "error", text: (error as Error).message });
-    } finally {
-      setRunning(false);
+    } else {
+      setNotice({ kind: "error", text: "No selected source completed. Review each source message and try again." });
     }
   };
 
-  const saveRows = async () => {
-    if (!run) return;
+  const updateQueueRow = (item: QueueItem, column: string, value: Scalar) => {
+    setRuns((current) => {
+      const run = current[item.source];
+      if (!run || run.run_id !== item.runId) return current;
+      const recordId = scalarText(item.row.job_record_id ?? item.row.external_job_id);
+      const nextRows = run.rows.map((row) => {
+        const candidateId = scalarText(row.job_record_id ?? row.external_job_id);
+        return row === item.row || (recordId && candidateId === recordId)
+          ? { ...row, [column]: value }
+          : row;
+      });
+      return { ...current, [item.source]: { ...run, rows: nextRows } };
+    });
+    setDirtySources((current) => new Set(current).add(item.source));
+  };
+
+  const saveChangedSources = async () => {
+    if (!dirtySources.size) return;
     setSaving(true);
-    setNotice({ kind: "info", text: "Updating the same Excel workbook locally and in Drive…" });
-    try {
-      const response = await api.saveRows(run.run_id, rows);
-      setRun(response.run);
-      setRows(response.run.rows);
-      setDirty(false);
-      setNotice({ kind: "success", text: "Your edits were saved to the same Excel and Drive file." });
-    } catch (error) {
-      setNotice({ kind: "error", text: (error as Error).message });
-    } finally {
-      setSaving(false);
+    const saved: WorkspaceSource[] = [];
+    const failed: WorkspaceSource[] = [];
+    for (const source of Array.from(dirtySources)) {
+      const run = runs[source];
+      if (!run) continue;
+      try {
+        const next = source === "gmail"
+          ? (await api.saveRows(run.run_id, run.rows)).run
+          : (await api.saveDiscoveryRows(source, run.run_id, run.rows)).run;
+        setRuns((current) => ({ ...current, [source]: next }));
+        saved.push(source);
+      } catch {
+        failed.push(source);
+      }
     }
-  };
-
-  const updateCell = (recordId: string, column: string, value: Scalar) => {
-    setRows((current) =>
-      current.map((row) =>
-        valueText(row.job_record_id) === recordId ? { ...row, [column]: value } : row,
-      ),
-    );
-    setDirty(true);
-  };
-
-  const toggleSource = (source: string) => {
-    setSettings((current) => ({
-      ...current,
-      sources: current.sources.includes(source)
-        ? current.sources.filter((item) => item !== source)
-        : [...current.sources, source],
-    }));
-  };
-
-  const toggleColumn = (column: string) => {
-    setVisibleColumns((current) =>
-      current.includes(column)
-        ? current.filter((item) => item !== column)
-        : [...current, column],
-    );
-  };
-
-  const copyReferralMessage = async (message: string) => {
-    try {
-      await copyText(message);
-      setNotice({ kind: "success", text: "LinkedIn referral request copied." });
-    } catch (error) {
-      setNotice({ kind: "error", text: (error as Error).message });
-    }
+    setDirtySources((current) => {
+      const next = new Set(current);
+      saved.forEach((source) => next.delete(source));
+      return next;
+    });
+    setSaving(false);
+    setNotice({
+      kind: failed.length ? "info" : "success",
+      text: failed.length
+        ? `${saved.length} source workbook${saved.length === 1 ? "" : "s"} saved; ${failed.map((source) => SOURCE_LABELS[source]).join(", ")} could not be updated.`
+        : `${saved.length} source workbook${saved.length === 1 ? "" : "s"} updated locally and in Drive.`,
+    });
   };
 
   if (loading) {
     return (
-      <main className="loading-screen">
+      <main className="loading-screen premium-loading">
         <div className="brand-mark">JH</div>
-        <p>Preparing your job workspace…</p>
+        <div><strong>Preparing your workspace</strong><span>Loading Drive state, source registry, and current queues…</span></div>
+      </main>
+    );
+  }
+
+  if (!config) {
+    return (
+      <main className="loading-screen premium-loading startup-error">
+        <div className="brand-mark">!</div>
+        <div>
+          <strong>Workspace configuration is unavailable</strong>
+          <span>{notice?.text || "Check that the FastAPI service is running, then try again."}</span>
+          <button className="primary-button" type="button" onClick={() => window.location.reload()}>Retry</button>
+        </div>
       </main>
     );
   }
 
   return (
-    <div className="app">
-      <header className="topbar">
-        <div className="brand">
+    <div className="app app-shell">
+      <aside className="app-sidebar">
+        <div className="brand sidebar-brand">
           <div className="brand-mark">JH</div>
-          <div>
-            <p className="eyebrow">Personal workspace</p>
-            <h1>Job Hunt</h1>
-          </div>
+          <div><p className="eyebrow">Personal workspace</p><h1>Job Hunt</h1></div>
         </div>
-        <div className={`connection-pill ${google?.connected ? "connected" : "disconnected"}`}>
+
+        <nav className="product-nav" aria-label="Primary navigation">
+          <button className={activeTab === "run_setup" ? "active" : ""} type="button" onClick={() => navigateTo("run_setup")}>
+            <span className="nav-index">01</span><span><strong>Run Setup</strong><small>Choose and configure sources</small></span>
+          </button>
+          <button className={activeTab === "job_queue" ? "active" : ""} type="button" onClick={() => navigateTo("job_queue")}>
+            <span className="nav-index">02</span><span><strong>Job Queue</strong><small>{queueCount ? `${queueCount} source records` : "Unified review workspace"}</small></span>
+          </button>
+          <button className={activeTab === "network_reviews" ? "active" : ""} type="button" onClick={() => navigateTo("network_reviews")}>
+            <span className="nav-index">03</span><span><strong>Network</strong><small>Reviewers and referral context</small></span>
+          </button>
+        </nav>
+
+        <div className="sidebar-run-status">
+          <small>Current workspace</small>
+          <strong>{currentRunCount} source run{currentRunCount === 1 ? "" : "s"}</strong>
+          <span>{queueCount} preserved job record{queueCount === 1 ? "" : "s"}</span>
+          <button type="button" onClick={() => navigateTo("run_setup")}>Start another focused run →</button>
+        </div>
+
+        <div className={`sidebar-connection ${google?.connected ? "connected" : "disconnected"}`}>
           <span className="status-dot" />
-          <span>{google?.connected ? "Google connected" : "Google disconnected"}</span>
-          {!google?.connected && (
-            <button className="link-button" type="button" onClick={connectGoogle}>
-              {google?.reconnect_required ? "Reconnect" : "Connect"}
-            </button>
-          )}
+          <div><strong>{google?.connected ? "Google connected" : "Google disconnected"}</strong><small>{google?.connected ? "Gmail read-only · Drive app files" : google?.message}</small></div>
+          {!google?.connected && <button type="button" onClick={connectGoogle}>{google?.reconnect_required ? "Reconnect" : "Connect"}</button>}
         </div>
-      </header>
+      </aside>
 
-      <nav className="source-tabs" aria-label="Job sources">
-        <button className={activeTab === "gmail" ? "active" : ""} onClick={() => setActiveTab("gmail")}>
-          <span>01</span> Gmail alerts <b>Ready</b>
-        </button>
-        <button
-          className={activeTab === "company_portals" ? "active" : ""}
-          onClick={() => setActiveTab("company_portals")}
-        >
-          <span>02</span> Company portals <b>Ready</b>
-        </button>
-        <button className={activeTab === "ats_sources" ? "active" : ""} onClick={() => setActiveTab("ats_sources")}>
-          <span>03</span> ATS sources <b>Ready</b>
-        </button>
-        <button
-          className={activeTab === "network_reviews" ? "active" : ""}
-          onClick={() => setActiveTab("network_reviews")}
-        >
-          <span>04</span> Network reviews <b>Ready</b>
-        </button>
-      </nav>
-
-      {notice && (
-        <div className={`notice ${notice.kind}`} role="status" aria-live="polite">
-          <span>{notice.kind === "success" ? "✓" : notice.kind === "error" ? "!" : "i"}</span>
-          <p>{notice.text}</p>
-          <button type="button" aria-label="Dismiss message" onClick={() => setNotice(null)}>×</button>
-        </div>
-      )}
-
-      {activeTab === "gmail" ? (
-        <main className="workspace">
-          <aside className="settings-panel">
-            <div className="panel-heading">
-              <div>
-                <p className="eyebrow">Manual run</p>
-                <h2>Gmail settings</h2>
-              </div>
-              <span className="safe-badge">Read only</span>
-            </div>
-
-            <fieldset>
-              <legend>Alert sources</legend>
-              <div className="source-options">
-                {(["linkedin", "naukri"] as const).map((source) => (
-                  <label className="check-card" key={source}>
-                    <input
-                      type="checkbox"
-                      checked={settings.sources.includes(source)}
-                      onChange={() => toggleSource(source)}
-                    />
-                    <span className={`source-icon ${source}`}>{source === "linkedin" ? "in" : "n"}</span>
-                    <span>{source === "linkedin" ? "LinkedIn" : "Naukri"}</span>
-                  </label>
-                ))}
-              </div>
-            </fieldset>
-
-            {(["linkedin", "naukri"] as const).map((source) => (
-              <label className="field" key={source}>
-                <span>{source === "linkedin" ? "LinkedIn" : "Naukri"} Gmail label</span>
-                <input
-                  value={settings.labels_by_source[source] ?? ""}
-                  onChange={(event) =>
-                    setSettings((current) => ({
-                      ...current,
-                      labels_by_source: { ...current.labels_by_source, [source]: event.target.value },
-                    }))
-                  }
-                />
-              </label>
-            ))}
-
-            <div className="field-row">
-              <label className="field">
-                <span>Lookback days</span>
-                <input
-                  type="number"
-                  min="1"
-                  max="90"
-                  value={settings.lookback_days}
-                  onChange={(event) => setSettings({ ...settings, lookback_days: Number(event.target.value) })}
-                />
-              </label>
-              <label className="field">
-                <span>Max emails</span>
-                <input
-                  type="number"
-                  min="1"
-                  max="5000"
-                  value={settings.max_messages}
-                  onChange={(event) => setSettings({ ...settings, max_messages: Number(event.target.value) })}
-                />
-              </label>
-            </div>
-
-            <label className="field">
-              <span>Companies <small>optional, one per line</small></span>
-              <textarea
-                rows={3}
-                value={settings.company_allowlist}
-                placeholder="Wipro\nAccenture\nGoogle"
-                onChange={(event) => setSettings({ ...settings, company_allowlist: event.target.value })}
-              />
-            </label>
-
-            <div className="field-row">
-              <label className="field">
-                <span>Minimum years</span>
-                <input
-                  type="number"
-                  min="0"
-                  step="0.5"
-                  value={settings.target_experience_min_years}
-                  onChange={(event) =>
-                    setSettings({ ...settings, target_experience_min_years: Number(event.target.value) })
-                  }
-                />
-              </label>
-              <label className="field">
-                <span>Maximum years</span>
-                <input
-                  type="number"
-                  min="0"
-                  step="0.5"
-                  value={settings.target_experience_max_years}
-                  onChange={(event) =>
-                    setSettings({ ...settings, target_experience_max_years: Number(event.target.value) })
-                  }
-                />
-              </label>
-            </div>
-
-            <label className="toggle-row">
-              <input
-                type="checkbox"
-                checked={settings.include_unmatched_companies}
-                onChange={(event) => setSettings({ ...settings, include_unmatched_companies: event.target.checked })}
-              />
-              <span>Keep unmatched or unknown companies</span>
-            </label>
-            <label className="toggle-row">
-              <input
-                type="checkbox"
-                checked={settings.strict_experience_filter}
-                onChange={(event) => setSettings({ ...settings, strict_experience_filter: event.target.checked })}
-              />
-              <span>Exclude roles known outside 5–8 years</span>
-            </label>
-
-            <details className="advanced">
-              <summary>Advanced Gmail query</summary>
-              <label className="toggle-row compact">
-                <input
-                  type="checkbox"
-                  checked={settings.override_query}
-                  onChange={(event) => setSettings({ ...settings, override_query: event.target.checked })}
-                />
-                <span>Override generated query</span>
-              </label>
-              <textarea
-                rows={3}
-                disabled={!settings.override_query}
-                value={settings.override_query ? settings.gmail_query : generatedQuery(settings)}
-                onChange={(event) => setSettings({ ...settings, gmail_query: event.target.value })}
-              />
-            </details>
-
-            <button
-              className="primary-button run-button"
-              type="button"
-              onClick={runGmail}
-              disabled={!google?.connected || running || saving}
-            >
-              {running ? <span className="spinner" /> : <span>▶</span>}
-              {running ? "Running Gmail workflow…" : "Run Gmail alerts"}
-            </button>
-            <p className="privacy-note">
-              No LLM, portal search, mailbox modification, or application submission runs here.
-            </p>
-          </aside>
-
-          <section className="results-panel">
-            <div className="results-heading">
-              <div>
-                <p className="eyebrow">Current workbook</p>
-                <h2>{run ? run.file_name : "No Gmail run yet"}</h2>
-                <p>
-                  {run
-                    ? `Run ${run.run_id} · ${new Date(run.run_started_at).toLocaleString()}`
-                    : "Connect Google, review the settings, and run your approved alert labels."}
-                </p>
-              </div>
-              <div className="heading-actions">
-                {run?.drive_url && (
-                  <a className="secondary-button" href={run.drive_url} target="_blank" rel="noreferrer">Open in Drive ↗</a>
-                )}
-                {run && (
-                  <a className="secondary-button" href={`/api/gmail/runs/${encodeURIComponent(run.run_id)}/download`}>
-                    Download Excel
-                  </a>
-                )}
-                <button
-                  className="primary-button"
-                  type="button"
-                  onClick={saveRows}
-                  disabled={!run || !dirty || saving || running}
-                >
-                  {saving ? "Saving…" : dirty ? "Save Excel + Drive" : "Saved"}
-                </button>
-              </div>
-            </div>
-
-            {run ? (
-              <>
-                <div className="metrics-grid">
-                  <MetricCard label="Emails read" value={metric(run.summary, "messages_read")} />
-                  <MetricCard label="Jobs parsed" value={metric(run.summary, "jobs_parsed")} />
-                  <MetricCard
-                    label="Duplicates merged"
-                    value={Math.max(0, metric(run.summary, "jobs_parsed") - metric(run.summary, "jobs_after_deduplication"))}
-                  />
-                  <MetricCard label="Previously seen" value={metric(run.summary, "jobs_unchanged_from_prior_runs")} />
-                  <MetricCard label="Referral leads" value={metric(run.summary, "jobs_with_referral_candidate")} />
-                  <MetricCard label="Rows to review" value={rows.length} accent />
-                </div>
-
-                <div className="table-toolbar">
-                  <label className="search-field">
-                    <span>⌕</span>
-                    <input
-                      value={search}
-                      placeholder="Search company, title, location, experience…"
-                      onChange={(event) => setSearch(event.target.value)}
-                    />
-                  </label>
-                  <select value={sourceFilter} onChange={(event) => setSourceFilter(event.target.value)} aria-label="Filter by source">
-                    <option value="all">All sources</option>
-                    <option value="linkedin">LinkedIn</option>
-                    <option value="naukri">Naukri</option>
-                  </select>
-                  <select value={statusFilter} onChange={(event) => setStatusFilter(event.target.value)} aria-label="Filter by application status">
-                    <option value="all">All statuses</option>
-                    {run.application_statuses.map((status) => <option key={status}>{status}</option>)}
-                  </select>
-                  <details className="column-picker">
-                    <summary>Columns · {visibleColumns.length}</summary>
-                    <div>
-                      {run.job_columns.map((column) => (
-                        <label key={column}>
-                          <input
-                            type="checkbox"
-                            checked={visibleColumns.includes(column)}
-                            onChange={() => toggleColumn(column)}
-                          />
-                          <span>{labelFor(column)}</span>
-                        </label>
-                      ))}
-                    </div>
-                  </details>
-                  <span className="row-count">{filteredRows.length} of {rows.length} rows</span>
-                </div>
-
-                <div className="table-wrap">
-                  <table>
-                    <thead>
-                      <tr>
-                        <th className="job-tools-heading">Job tools</th>
-                        {visibleColumns.map((column) => <th key={column}>{labelFor(column)}</th>)}
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {filteredRows.map((row) => {
-                        const recordId = valueText(row.job_record_id);
-                        return (
-                          <tr key={recordId}>
-                            <td className="job-tools-cell">
-                              <button
-                                className="table-action-button"
-                                type="button"
-                                onClick={() => setIntelligenceJob(row)}
-                              >
-                                Official JD + resume
-                              </button>
-                            </td>
-                            {visibleColumns.map((column) => (
-                              <JobCell
-                                key={column}
-                                row={row}
-                                column={column}
-                                editable={run.editable_columns.includes(column)}
-                                applicationStatuses={run.application_statuses}
-                                experienceStatuses={run.experience_fit_statuses}
-                                onChange={(value) => updateCell(recordId, column, value)}
-                                onCopy={copyReferralMessage}
-                              />
-                            ))}
-                          </tr>
-                        );
-                      })}
-                    </tbody>
-                  </table>
-                  {!filteredRows.length && <div className="empty-table">No rows match the current filters.</div>}
-                </div>
-                <p className="table-help">
-                  Referral candidates come from your offline LinkedIn export snapshot. Verify their current employer before messaging; use Copy message for a concise, editable request.
-                </p>
-              </>
-            ) : (
-              <div className="empty-state">
-                <div>✦</div>
-                <h3>Your normalized alert jobs will appear here</h3>
-                <p>
-                  The backend reads only the labels and rolling date range you approve, removes duplicates, then creates one timestamped Excel file in Drive.
-                </p>
-                {!google?.connected && (
-                  <button className="primary-button" type="button" onClick={connectGoogle}>Connect Google</button>
-                )}
-              </div>
+      <section className="app-content">
+        <header className="content-topbar">
+          <div>
+            <p className="eyebrow">{activeTab === "run_setup" ? "Discovery control" : activeTab === "job_queue" ? "Daily application workflow" : "Offline LinkedIn export"}</p>
+            <strong>{activeTab === "run_setup" ? "Run Setup" : activeTab === "job_queue" ? "Job Queue" : "Network Reviews"}</strong>
+          </div>
+          <div className="topbar-actions">
+            <span className="privacy-pill">Private · manual actions only</span>
+            {config.drive_workspace_url && (
+              <a href={config.drive_workspace_url} target="_blank" rel="noreferrer">
+                <span className="drive-link-desktop">Open Drive workspace</span>
+                <span className="drive-link-mobile">Drive</span> ↗
+              </a>
             )}
-          </section>
-        </main>
-      ) : activeTab === "company_portals" ? (
-        <DiscoveryTab
-          mode="company_portals"
-          googleConnected={Boolean(google?.connected)}
-          maxSources={config?.discovery_max_sources_per_run ?? 10}
-          onConnectGoogle={connectGoogle}
-          onNotice={setNotice}
-        />
-      ) : activeTab === "ats_sources" ? (
-        <DiscoveryTab
-          mode="ats_sources"
-          googleConnected={Boolean(google?.connected)}
-          maxSources={config?.discovery_max_sources_per_run ?? 10}
-          onConnectGoogle={connectGoogle}
-          onNotice={setNotice}
-        />
-      ) : (
-        <NetworkReviewsTab onNotice={setNotice} />
-      )}
-      {intelligenceJob && (
+          </div>
+        </header>
+
+        {notice && (
+          <div className={`notice premium-notice ${notice.kind}`} role="status" aria-live="polite">
+            <span>{notice.kind === "success" ? "✓" : notice.kind === "error" ? "!" : "i"}</span>
+            <p>{notice.text}</p>
+            <button type="button" aria-label="Dismiss message" onClick={() => setNotice(null)}>×</button>
+          </div>
+        )}
+
+        {activeTab === "run_setup" ? (
+          <RunSetupTab
+            config={config}
+            googleConnected={Boolean(google?.connected)}
+            registry={registry}
+            value={setup}
+            onChange={setSetup}
+            onRun={runSelectedSources}
+            onConnectGoogle={connectGoogle}
+            runningSource={runningSource}
+            outcomes={outcomes}
+          />
+        ) : activeTab === "job_queue" ? (
+          <JobQueueTab
+            config={config}
+            runs={runs}
+            dirtySources={dirtySources}
+            saving={saving}
+            onSave={saveChangedSources}
+            onUpdate={updateQueueRow}
+            onOpenJob={setSelectedJob}
+            onGoToSetup={() => navigateTo("run_setup")}
+            onNotice={(text) => setNotice({ kind: "success", text })}
+          />
+        ) : (
+          <NetworkReviewsTab onNotice={setNotice} />
+        )}
+      </section>
+
+      {selectedJob && (
         <JobIntelligencePanel
-          job={intelligenceJob}
+          job={selectedJob.row}
           googleConnected={Boolean(google?.connected)}
-          onClose={() => setIntelligenceJob(null)}
+          onClose={() => setSelectedJob(null)}
           onOfficialUrl={(url) => {
-            const recordId = valueText(intelligenceJob.job_record_id);
-            updateCell(recordId, "official_url", url);
-            setIntelligenceJob((current) => current ? { ...current, official_url: url } : current);
+            updateQueueRow(selectedJob, "official_url", url);
+            setSelectedJob((current) => current ? { ...current, row: { ...current.row, official_url: url } } : null);
           }}
         />
       )}
     </div>
-  );
-}
-
-function MetricCard({ label, value, accent = false }: { label: string; value: number; accent?: boolean }) {
-  return (
-    <article className={`metric-card ${accent ? "accent" : ""}`}>
-      <span>{label}</span>
-      <strong>{value.toLocaleString()}</strong>
-    </article>
-  );
-}
-
-function JobCell({
-  row,
-  column,
-  editable,
-  applicationStatuses,
-  experienceStatuses,
-  onChange,
-  onCopy,
-}: {
-  row: JobRow;
-  column: string;
-  editable: boolean;
-  applicationStatuses: string[];
-  experienceStatuses: string[];
-  onChange: (value: Scalar) => void;
-  onCopy: (value: string) => void;
-}) {
-  const value = valueText(row[column]);
-  const isUrl = ["source_url", "official_url", "referral_profile_url"].includes(column);
-
-  if (editable && column === "application_status") {
-    return (
-      <td><select value={value} onChange={(event) => onChange(event.target.value)}>{applicationStatuses.map((item) => <option key={item}>{item}</option>)}</select></td>
-    );
-  }
-  if (editable && column === "experience_fit") {
-    return (
-      <td><select value={value} onChange={(event) => onChange(event.target.value)}>{experienceStatuses.map((item) => <option key={item}>{item}</option>)}</select></td>
-    );
-  }
-  if (editable && column === "notes") {
-    return <td className="wide-cell"><textarea rows={3} value={value} onChange={(event) => onChange(event.target.value)} placeholder="Add a review note…" /></td>;
-  }
-  if (editable) {
-    const numberField = column === "experience_min_years" || column === "experience_max_years";
-    return (
-      <td className={column === "title" ? "wide-cell" : ""}>
-        <div className={isUrl ? "url-editor" : ""}>
-          <input
-            type={numberField ? "number" : "text"}
-            step={numberField ? "0.5" : undefined}
-            value={value}
-            onChange={(event) => onChange(numberField && event.target.value ? Number(event.target.value) : event.target.value)}
-          />
-          {isUrl && value && <a href={value} target="_blank" rel="noreferrer" aria-label={`Open ${labelFor(column)}`}>↗</a>}
-        </div>
-      </td>
-    );
-  }
-  if (isUrl) {
-    const linkText = column === "source_url"
-      ? "Open alert job"
-      : column === "official_url"
-        ? "Open official job"
-        : "Open LinkedIn profile";
-    return (
-      <td>
-        {value ? <a className="job-link" href={value} target="_blank" rel="noreferrer">{linkText} ↗</a> : <span className="muted">Not available</span>}
-      </td>
-    );
-  }
-  if (column === "referral_name") {
-    const profileUrl = valueText(row.referral_profile_url);
-    return (
-      <td className="referral-name-cell">
-        {value && profileUrl ? (
-          <a className="job-link" href={profileUrl} target="_blank" rel="noreferrer">{value} ↗</a>
-        ) : value ? value : <span className="muted">No offline match</span>}
-      </td>
-    );
-  }
-  if (column === "referral_message") {
-    return (
-      <td className="referral-message-cell">
-        {value ? (
-          <div className="referral-message">
-            <LinkifiedText value={value} />
-            <button type="button" onClick={() => onCopy(value)}>Copy message</button>
-          </div>
-        ) : <span className="muted">No message available</span>}
-      </td>
-    );
-  }
-  if (column === "referral_eligibility") {
-    return <td className="eligibility-cell">{value || <span className="muted">Not assessed</span>}</td>;
-  }
-  if (column === "alert_source") {
-    return <td><span className={`source-chip ${value}`}>{value || "unknown"}</span></td>;
-  }
-  if (column === "experience_fit" || column === "parse_status" || column === "application_status") {
-    return <td><span className={`value-chip ${value}`}>{value || "unknown"}</span></td>;
-  }
-  return <td className={column === "title" || column === "email_subject" ? "wide-cell" : ""}>{value || <span className="muted">—</span>}</td>;
-}
-
-function LinkifiedText({ value }: { value: string }) {
-  const parts = value.split(/(https?:\/\/[^\s]+)/g);
-  return (
-    <p>
-      {parts.map((part, index) =>
-        part.startsWith("http://") || part.startsWith("https://") ? (
-          <a key={`${part}-${index}`} href={part} target="_blank" rel="noreferrer">{part}</a>
-        ) : <span key={`${part}-${index}`}>{part}</span>,
-      )}
-    </p>
   );
 }
 

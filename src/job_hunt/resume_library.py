@@ -21,7 +21,6 @@ from job_hunt.integrations.drive_storage import (
 )
 from job_hunt.private_io import read_json, write_json_atomic
 from job_hunt.resume_docx import (
-    MAX_BASE_RESUME_BYTES,
     extract_resume_evidence,
     resume_sha256,
     validate_resume_docx,
@@ -38,9 +37,10 @@ LIBRARY_FOLDER_NAME = "Resume Library"
 BASELINES_FOLDER_NAME = "Baselines"
 REFERENCES_FOLDER_NAME = "References"
 MANIFEST_NAME = "resume_library.json"
-MANIFEST_VERSION = 1
+MANIFEST_VERSION = 2
 MAX_REFERENCE_BYTES = 8 * 1024 * 1024
 MAX_REFERENCE_FILES = 20
+MAX_CONFIRMED_SKILL_EVIDENCE = 200
 
 
 class ResumeLibraryError(RuntimeError):
@@ -68,6 +68,7 @@ def _default_manifest() -> dict[str, Any]:
         "active_baseline_sha256": "",
         "baselines": [],
         "references": [],
+        "confirmed_skill_evidence": [],
         "artifacts": {},
         "updated_at": "",
     }
@@ -85,6 +86,17 @@ def _normalize_manifest(value: object) -> dict[str, Any]:
     manifest["references"] = [
         dict(item) for item in source.get("references") or [] if isinstance(item, Mapping)
     ][:MAX_REFERENCE_FILES]
+    manifest["confirmed_skill_evidence"] = [
+        {
+            "skill": str(item.get("skill") or "").strip()[:120],
+            "note": str(item.get("note") or "").strip()[:1200],
+            "confirmed_at": str(item.get("confirmed_at") or ""),
+        }
+        for item in source.get("confirmed_skill_evidence") or []
+        if isinstance(item, Mapping)
+        and str(item.get("skill") or "").strip()
+        and str(item.get("note") or "").strip()
+    ][-MAX_CONFIRMED_SKILL_EVIDENCE:]
     manifest["artifacts"] = {
         str(key): dict(item)
         for key, item in dict(source.get("artifacts") or {}).items()
@@ -215,6 +227,14 @@ class DriveResumeLibrary:
             }
             for item in manifest.get("references") or []
         ]
+        confirmed_skill_evidence = [
+            {
+                "skill": str(item.get("skill") or ""),
+                "note": str(item.get("note") or ""),
+                "confirmed_at": str(item.get("confirmed_at") or ""),
+            }
+            for item in manifest.get("confirmed_skill_evidence") or []
+        ]
         return {
             "drive_connected": drive_connected,
             "drive_backed": True,
@@ -226,9 +246,54 @@ class DriveResumeLibrary:
             "baseline_immutable": True,
             "reference_documents": references,
             "reference_document_count": len(references),
+            "confirmed_skill_evidence": confirmed_skill_evidence,
+            "confirmed_skill_evidence_count": len(confirmed_skill_evidence),
             "library_url": library_url,
             "message": message,
         }
+
+    def store_confirmed_skill_evidence(
+        self,
+        entries: Iterable[Mapping[str, Any]],
+    ) -> dict[str, Any]:
+        """Persist user-confirmed professional evidence in the private Drive library."""
+
+        prepared: list[dict[str, str]] = []
+        confirmed_at = datetime.now(TIME_ZONE).replace(microsecond=0).isoformat()
+        for entry in entries:
+            skill = str(entry.get("skill") or "").strip()[:120]
+            note = str(entry.get("note") or "").strip()[:1200]
+            if skill and note:
+                prepared.append(
+                    {
+                        "skill": skill,
+                        "note": note,
+                        "confirmed_at": confirmed_at,
+                    }
+                )
+        if not prepared:
+            return self.status()
+
+        drive = self._require_drive()
+        folders = self._ensure_folders(drive)
+        manifest, manifest_file_id = self._load_manifest(drive, folders)
+        by_skill = {
+            re.sub(r"\s+", " ", str(item.get("skill") or "").strip()).casefold(): dict(item)
+            for item in manifest.get("confirmed_skill_evidence") or []
+            if str(item.get("skill") or "").strip()
+        }
+        for entry in prepared:
+            key = re.sub(r"\s+", " ", entry["skill"]).casefold()
+            by_skill[key] = entry
+        manifest["confirmed_skill_evidence"] = list(by_skill.values())[
+            -MAX_CONFIRMED_SKILL_EVIDENCE:
+        ]
+        saved = self._save_manifest(drive, folders, manifest, manifest_file_id)
+        return self._status_payload(
+            saved,
+            drive_connected=True,
+            library_url=drive_folder_url(str(folders["library"]["id"])),
+        )
 
     def status(self) -> dict[str, Any]:
         try:

@@ -1,7 +1,7 @@
 """Canonical models kept independent of Gmail, Streamlit, and Google Sheets."""
 
 from dataclasses import asdict, dataclass, field
-from typing import Dict, List, Optional
+from typing import List, Optional
 
 
 @dataclass(frozen=True)

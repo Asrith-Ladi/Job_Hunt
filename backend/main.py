@@ -176,6 +176,12 @@ class JobAnalysisRequest(BaseModel):
     refresh: bool = False
 
 
+class ConfirmedSkillEvidenceRequest(BaseModel):
+    skill: str = Field(min_length=1, max_length=120)
+    note: str = Field(min_length=20, max_length=1200)
+    confirmed: bool = False
+
+
 class ResumeGenerationRequest(BaseModel):
     analysis_id: str = Field(min_length=1, max_length=100)
     official_job_id: str = Field(min_length=1, max_length=100)
@@ -183,6 +189,10 @@ class ResumeGenerationRequest(BaseModel):
         default_factory=lambda: ["resume_docx"],
         min_length=1,
         max_length=3,
+    )
+    confirmed_skill_evidence: list[ConfirmedSkillEvidenceRequest] = Field(
+        default_factory=list,
+        max_length=20,
     )
     refresh_plan: bool = False
 
@@ -372,6 +382,9 @@ def create_app(
                 payload.analysis_id,
                 payload.official_job_id,
                 outputs=payload.outputs,
+                confirmed_skill_evidence=[
+                    item.model_dump() for item in payload.confirmed_skill_evidence
+                ],
                 refresh_plan=payload.refresh_plan,
             )
             for artifact in result["artifacts"]:

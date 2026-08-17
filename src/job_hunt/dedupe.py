@@ -3,10 +3,7 @@
 import hashlib
 import re
 from dataclasses import replace
-from typing import Dict, Iterable, List, Optional
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
-
-from job_hunt.models import JobRecord
 
 
 TRACKING_QUERY_KEYS = {

@@ -1,6 +1,7 @@
 import type {
   AppConfig,
   CompanyRegistryEntry,
+  ConfirmedSkillEvidence,
   DiscoveryFiltersSettings,
   DiscoveryRunArtifact,
   GoogleStatus,
@@ -143,6 +144,7 @@ export const api = {
     analysisId: string;
     officialJobId: string;
     outputs: GeneratedArtifactKind[];
+    confirmedSkillEvidence?: ConfirmedSkillEvidence[];
     refreshPlan?: boolean;
   }) =>
     request<{ generation: GeneratedDocumentSet }>("/api/job-intelligence/resumes", {
@@ -151,6 +153,7 @@ export const api = {
         analysis_id: options.analysisId,
         official_job_id: options.officialJobId,
         outputs: options.outputs,
+        confirmed_skill_evidence: options.confirmedSkillEvidence ?? [],
         refresh_plan: options.refreshPlan ?? false,
       }),
     }),

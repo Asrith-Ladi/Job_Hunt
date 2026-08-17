@@ -95,13 +95,49 @@ class DiscoveryFilters:
         if self.target_experience_max_years < self.target_experience_min_years:
             raise ValueError("Target maximum experience must be at least the minimum.")
 
-    def matches_text(self, title: str, description: str = "") -> bool:
-        keyword = clean_text(self.keyword).casefold()
-        if not keyword:
+    def matches_text(self, *values: str) -> bool:
+        query = clean_text(self.keyword).casefold()
+        if not query:
             return True
-        searchable = f"{title} {description}".casefold()
-        terms = [term for term in re.split(r"[,\n]", keyword) if term.strip()]
-        return any(term.strip() in searchable for term in terms)
+
+        def normalized(value: str) -> str:
+            text = clean_text(value).casefold().replace("_", " ")
+            return re.sub(r"[^\w+#.]+", " ", text, flags=re.UNICODE).strip()
+
+        searchable = f" {' '.join(normalized(value) for value in values)} "
+        searchable_tokens = searchable.split()
+        compact_token_groups = {
+            "".join(searchable_tokens[index : index + size])
+            for size in (2, 3)
+            for index in range(0, max(0, len(searchable_tokens) - size + 1))
+        }
+        terms = [normalized(term) for term in re.split(r"[,\n]", query)]
+
+        def token_matches(requested: str, candidate: str) -> bool:
+            if requested == candidate:
+                return True
+            if len(requested) < 4 or not candidate.startswith(requested):
+                return False
+            return candidate[len(requested) :] in {"s", "es", "ic", "ics", "ing"}
+
+        def term_matches(term: str) -> bool:
+            requested_tokens = term.split()
+            if not requested_tokens:
+                return False
+            width = len(requested_tokens)
+            for index in range(0, len(searchable_tokens) - width + 1):
+                candidate_tokens = searchable_tokens[index : index + width]
+                if all(
+                    token_matches(requested, candidate)
+                    for requested, candidate in zip(requested_tokens, candidate_tokens)
+                ):
+                    return True
+            return width == 1 and len(term) >= 4 and term in compact_token_groups
+
+        return any(
+            term and term_matches(term)
+            for term in terms
+        )
 
     def matches_location(self, location: str) -> bool:
         requested = clean_text(self.location).casefold()

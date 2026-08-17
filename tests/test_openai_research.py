@@ -72,6 +72,76 @@ class _SequenceClient:
 
 
 class OpenAIResearchTests(unittest.TestCase):
+    def test_exact_posting_extraction_keeps_only_skills_with_exact_jd_evidence(self):
+        client = _FakeClient(
+            {
+                "description_summary": "Build and operate production agents for customers.",
+                "experience_evidence": "from 3+ years of experience",
+                "required_skills": [
+                    {"label": "AI agents", "evidence": "production agents"},
+                    {"label": "Python", "evidence": "Strong Python"},
+                    {"label": "MCP", "evidence": "MCP servers at scale"},
+                ],
+                "preferred_skills": [],
+            }
+        )
+        researcher = OfficialJobResearcher("unused", client=client)
+
+        posting = researcher.extract_exact_posting(
+            {"company": "Sarvam AI"},
+            {
+                "board": "sarvam",
+                "external_job_id": "36f89b00-2010-4d23-aae3-17a2f53d9eaa",
+                "title": "Agent Engineer",
+                "location": "Bengaluru",
+                "official_url": (
+                    "https://www.sarvam.ai/careers/jobs/"
+                    "36f89b00-2010-4d23-aae3-17a2f53d9eaa"
+                ),
+                "description": (
+                    "We hire from 3+ years of experience. Build production agents. "
+                    "Strong Python and cloud infrastructure."
+                ),
+                "source_fingerprint": "fingerprint",
+            },
+        )
+
+        self.assertEqual(posting["required_skills"], ["AI agents", "Python"])
+        self.assertNotIn("MCP", posting["required_skill_evidence"])
+        self.assertEqual(posting["experience_min"], 3)
+        self.assertIsNone(posting["experience_max"])
+        self.assertNotIn("tools", client.responses.calls[0])
+
+    def test_exact_only_research_rejects_a_related_job_url(self):
+        selected_id = "36f89b00-2010-4d23-aae3-17a2f53d9eaa"
+        related_id = "30259734-50c3-4f1c-81cd-8bff07e585e7"
+        selected_url = f"https://careers.example.com/jobs/{selected_id}"
+        related = _candidate(f"https://careers.example.com/jobs/{related_id}")
+        related["match_status"] = "active_related"
+        client = _FakeClient(
+            {
+                "results": [
+                    {"alert_record_id": "alert-1", "candidates": [related]}
+                ]
+            }
+        )
+
+        research = OfficialJobResearcher("unused", client=client).research(
+            [
+                {
+                    "job_record_id": "alert-1",
+                    "company": "Example Company",
+                    "title": "Agent Engineer",
+                    "official_url": selected_url,
+                }
+            ],
+            exact_only=True,
+        )
+
+        self.assertNotIn("alert-1", research["matches"])
+        system_prompt = client.responses.calls[0]["input"][0]["content"]
+        self.assertIn("Do not return a related", system_prompt)
+
     def test_research_sends_only_normalized_facts_and_rejects_social_urls(self):
         result_payload = {
             "results": [

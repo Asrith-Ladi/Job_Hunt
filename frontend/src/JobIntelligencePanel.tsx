@@ -1,7 +1,10 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { api } from "./api";
 import type {
-  GeneratedResume,
+  ConfirmedSkillEvidence,
+  GeneratedArtifact,
+  GeneratedArtifactKind,
+  GeneratedDocumentSet,
   JobAnalysis,
   JobIntelligenceStatus,
   JobRow,
@@ -9,47 +12,78 @@ import type {
   Scalar,
 } from "./types";
 
+type EvidenceDraft = ConfirmedSkillEvidence & { confirmed: boolean };
+
+function skillKey(value: string): string {
+  return value.trim().toLocaleLowerCase().replace(/\s+/g, " ");
+}
+
+const OUTPUT_LABELS: Record<GeneratedArtifactKind, string> = {
+  resume_docx: "Tailored resume (DOCX)",
+  resume_pdf: "Tailored resume (PDF)",
+  cover_letter: "Cover letter (DOCX)",
+};
+
 function text(value: Scalar | undefined): string {
   return value === null || value === undefined ? "" : String(value);
 }
 
-function SkillList({ values, empty }: { values: string[]; empty: string }) {
+function SkillList({
+  values,
+  empty,
+  evidence = {},
+}: {
+  values: string[];
+  empty: string;
+  evidence?: Record<string, string>;
+}) {
   if (!values.length) return <span className="muted">{empty}</span>;
-  return <div className="skill-list">{values.map((value) => <span key={value}>{value}</span>)}</div>;
+  return (
+    <div className="skill-list">
+      {values.map((value) => (
+        <span key={value} title={evidence[value] || undefined}>{value}</span>
+      ))}
+    </div>
+  );
 }
 
 function CandidateCard({
   candidate,
   selected,
   onSelect,
+  evidenceDrafts,
+  onEvidenceChange,
 }: {
   candidate: OfficialJobCandidate;
   selected: boolean;
   onSelect: () => void;
+  evidenceDrafts: Record<string, EvidenceDraft>;
+  onEvidenceChange: (skill: string, value: EvidenceDraft) => void;
 }) {
+  const missingSkills = candidate.eligibility.missing_skills ?? [];
   return (
     <article className={`official-candidate ${selected ? "selected" : ""}`}>
       <label className="candidate-choice">
         <input type="radio" checked={selected} onChange={onSelect} />
         <span>
           <strong>{candidate.title}</strong>
-          <small>{[candidate.company, candidate.location].filter(Boolean).join(" · ")}</small>
+          <small>{[candidate.company, candidate.location].filter(Boolean).join(" / ")}</small>
         </span>
       </label>
       <div className="candidate-links">
-        <a href={candidate.official_url} target="_blank" rel="noreferrer">Open official job ↗</a>
+        <a href={candidate.official_url} target="_blank" rel="noreferrer">Open official job</a>
         <span className={`value-chip ${candidate.active_status}`}>{candidate.active_status || "unknown"}</span>
       </div>
 
       <div className="score-pair">
         <div>
-          <small>Alert → official identity</small>
+          <small>Alert to official identity</small>
           <strong>{candidate.official_match_score}/100</strong>
           <p>{candidate.official_match_reason || "Identity evidence is limited."}</p>
         </div>
         <div>
           <small>Resume eligibility</small>
-          <strong>{candidate.eligibility.score}/100 · {candidate.eligibility.band}</strong>
+          <strong>{candidate.eligibility.score}/100 / {candidate.eligibility.band}</strong>
           <p>{candidate.eligibility.experience_reason}</p>
         </div>
       </div>
@@ -64,15 +98,110 @@ function CandidateCard({
           <div><dt>Work type</dt><dd>{candidate.workplace_type || candidate.employment_type || "Not stated"}</dd></div>
         </dl>
         <h4>Required skills</h4>
-        <SkillList values={candidate.required_skills} empty="Not reliably extracted" />
+        <SkillList
+          values={candidate.required_skills}
+          evidence={candidate.required_skill_evidence}
+          empty="Not reliably extracted"
+        />
+        {Object.keys(candidate.required_skill_evidence ?? {}).length > 0 && (
+          <details className="skill-evidence">
+            <summary>Show exact JD evidence</summary>
+            <ul>
+              {candidate.required_skills.map((skill) => (
+                <li key={skill}>
+                  <strong>{skill}:</strong> {candidate.required_skill_evidence?.[skill]}
+                </li>
+              ))}
+            </ul>
+          </details>
+        )}
         <h4>Your documented matches</h4>
         <SkillList values={candidate.eligibility.matched_skills} empty="No exact skill labels matched" />
         <h4>Gaps to review honestly</h4>
         {candidate.eligibility.gaps.length ? (
           <ul>{candidate.eligibility.gaps.map((gap) => <li key={gap}>{gap}</li>)}</ul>
         ) : <p className="muted">No explicit gap was found from the available requirements.</p>}
+        {missingSkills.length > 0 && (
+          <section className="gap-evidence-section">
+            <div>
+              <h4>Add evidence for skills you actually used</h4>
+              <p>
+                Explain what you did. A confirmed keyword is added to the tailored
+                resume&apos;s Technical Skills section; unconfirmed gaps stay excluded.
+              </p>
+            </div>
+            <div className="gap-evidence-grid">
+              {missingSkills.map((skill) => {
+                const draft = evidenceDrafts[skillKey(skill)] ?? {
+                  skill,
+                  note: "",
+                  confirmed: false,
+                };
+                const noteReady = draft.note.trim().length >= 20;
+                return (
+                  <article className={`gap-evidence-card ${draft.confirmed ? "confirmed" : ""}`} key={skill}>
+                    <div className="gap-evidence-heading">
+                      <strong>{skill}</strong>
+                      <span>{draft.confirmed ? "Ready for Skills" : "Not included"}</span>
+                    </div>
+                    <label>
+                      Your factual evidence note
+                      <textarea
+                        rows={3}
+                        maxLength={1200}
+                        value={draft.note}
+                        placeholder="Example: Built and evaluated an agent workflow for a personal or work project; describe only what you actually did."
+                        onChange={(event) => onEvidenceChange(skill, {
+                          ...draft,
+                          skill,
+                          note: event.target.value,
+                          confirmed: draft.confirmed && event.target.value.trim().length >= 20,
+                        })}
+                      />
+                    </label>
+                    <label className="evidence-confirmation">
+                      <input
+                        type="checkbox"
+                        checked={draft.confirmed}
+                        disabled={!noteReady}
+                        onChange={(event) => onEvidenceChange(skill, {
+                          ...draft,
+                          skill,
+                          confirmed: event.target.checked,
+                        })}
+                      />
+                      <span>I confirm this is accurate and may be used in my tailored resume.</span>
+                    </label>
+                    {!noteReady && draft.note.length > 0 && (
+                      <small>Add at least 20 characters of factual context before confirming.</small>
+                    )}
+                  </article>
+                );
+              })}
+            </div>
+            <p className="evidence-storage-note">
+              Confirmed notes are sent to Luna only when you generate documents and are stored privately in the Drive resume library.
+            </p>
+          </section>
+        )}
         <p className="score-components">{candidate.eligibility.components}</p>
+        {candidate.source_notes && <p className="source-evidence-note">{candidate.source_notes}</p>}
       </details>
+    </article>
+  );
+}
+
+function ArtifactCard({ artifact }: { artifact: GeneratedArtifact }) {
+  return (
+    <article className="artifact-card">
+      <div>
+        <strong>{OUTPUT_LABELS[artifact.kind]}</strong>
+        <span>{artifact.file_name}</span>
+      </div>
+      <div className="action-row compact-actions">
+        <a className="primary-button" href={artifact.download_url}>Download</a>
+        <a className="secondary-button" href={artifact.drive_url} target="_blank" rel="noreferrer">Open in Drive</a>
+      </div>
     </article>
   );
 }
@@ -91,17 +220,28 @@ export default function JobIntelligencePanel({
   const [status, setStatus] = useState<JobIntelligenceStatus | null>(null);
   const [analysis, setAnalysis] = useState<JobAnalysis | null>(null);
   const [selectedId, setSelectedId] = useState("");
-  const [resume, setResume] = useState<GeneratedResume | null>(null);
-  const [uploadToDrive, setUploadToDrive] = useState(googleConnected);
-  const [busy, setBusy] = useState<"status" | "analysis" | "upload" | "resume" | "">("status");
+  const [generation, setGeneration] = useState<GeneratedDocumentSet | null>(null);
+  const [evidenceDrafts, setEvidenceDrafts] = useState<Record<string, EvidenceDraft>>({});
+  const [outputs, setOutputs] = useState<GeneratedArtifactKind[]>(["resume_docx"]);
+  const [busy, setBusy] = useState<"status" | "analysis" | "baseline" | "references" | "documents" | "">("status");
   const [message, setMessage] = useState<{ kind: "error" | "info" | "success"; text: string } | null>(null);
-  const fileRef = useRef<HTMLInputElement>(null);
+  const baselineRef = useRef<HTMLInputElement>(null);
+  const referencesRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     let active = true;
     api.jobIntelligenceStatus()
       .then((value) => {
-        if (active) setStatus(value);
+        if (active) {
+          setStatus(value);
+          const saved = Object.fromEntries(
+            (value.confirmed_skill_evidence ?? []).map((entry) => [
+              skillKey(entry.skill),
+              { ...entry, confirmed: true },
+            ]),
+          );
+          setEvidenceDrafts((current) => ({ ...saved, ...current }));
+        }
       })
       .catch((error: Error) => {
         if (active) setMessage({ kind: "error", text: error.message });
@@ -116,16 +256,39 @@ export default function JobIntelligencePanel({
     () => analysis?.candidates.find((candidate) => candidate.official_job_id === selectedId) ?? null,
     [analysis, selectedId],
   );
+  const driveReady = Boolean(googleConnected && status?.drive_connected);
+
+  const updateEvidence = (skill: string, value: EvidenceDraft) => {
+    setEvidenceDrafts((current) => ({
+      ...current,
+      [skillKey(skill)]: value,
+    }));
+    setGeneration(null);
+  };
+
+  const confirmedEvidence = useMemo(() => {
+    if (!selected) return [];
+    return (selected.eligibility.missing_skills ?? [])
+      .map((skill) => evidenceDrafts[skillKey(skill)])
+      .filter((entry): entry is EvidenceDraft => Boolean(
+        entry?.confirmed && entry.note.trim().length >= 20,
+      ))
+      .map((entry) => ({
+        skill: entry.skill,
+        note: entry.note.trim(),
+        confirmed: true,
+      }));
+  }, [evidenceDrafts, selected]);
 
   const runAnalysis = async (refresh = false) => {
     if (!status?.openai_configured) {
       setMessage({ kind: "error", text: "Configure OPENAI_API_KEY on the FastAPI server first." });
       return;
     }
-    if (refresh && !window.confirm("Refresh ignores the saved result and creates a new Luna web-research call. Continue?")) return;
+    if (refresh && !window.confirm("Refresh ignores the saved result and creates a new Luna verification/extraction call. Continue?")) return;
     setBusy("analysis");
-    setResume(null);
-    setMessage({ kind: "info", text: refresh ? "Refreshing the official source…" : "Checking the private cache, then the official public source if needed…" });
+    setGeneration(null);
+    setMessage({ kind: "info", text: refresh ? "Refreshing the official source..." : "Checking the private cache, then the official public source if needed..." });
     try {
       const response = await api.analyzeJob(job, refresh);
       setAnalysis(response.analysis);
@@ -133,10 +296,15 @@ export default function JobIntelligencePanel({
       setSelectedId(first?.official_job_id ?? "");
       if (first?.official_url) onOfficialUrl?.(first.official_url);
       setMessage({
-        kind: response.analysis.candidates.length ? "success" : "info",
+        kind: response.analysis.candidates.length
+          ? "success"
+          : response.analysis.warnings?.length
+            ? "error"
+            : "info",
         text: response.analysis.candidates.length
           ? `${response.analysis.candidates.length} official candidate(s) found${response.analysis.cached ? " from cache" : " with Luna"}.`
-          : "No current public official posting could be verified. No resume was generated.",
+          : response.analysis.warnings?.[0]
+            ?? "No current public official posting could be verified. No documents were generated.",
       });
     } catch (error) {
       setMessage({ kind: "error", text: (error as Error).message });
@@ -147,43 +315,86 @@ export default function JobIntelligencePanel({
 
   const chooseCandidate = (candidate: OfficialJobCandidate) => {
     setSelectedId(candidate.official_job_id);
-    setResume(null);
+    setGeneration(null);
     onOfficialUrl?.(candidate.official_url);
   };
 
   const uploadBaseline = async (file: File | undefined) => {
     if (!file) return;
-    setBusy("upload");
-    setMessage({ kind: "info", text: "Validating and storing the baseline DOCX privately…" });
+    if (!driveReady) {
+      setMessage({ kind: "error", text: "Reconnect Google before changing the Drive baseline." });
+      return;
+    }
+    setBusy("baseline");
+    setMessage({ kind: "info", text: "Validating and storing a new immutable baseline version in Drive..." });
     try {
       const nextStatus = await api.uploadBaselineResume(file);
       setStatus(nextStatus);
-      setMessage({ kind: "success", text: "Baseline resume saved privately. Contact details remain outside OpenAI." });
+      setGeneration(null);
+      setMessage({ kind: "success", text: "The new Drive baseline is active. Earlier baseline versions remain unchanged." });
     } catch (error) {
       setMessage({ kind: "error", text: (error as Error).message });
     } finally {
-      if (fileRef.current) fileRef.current.value = "";
+      if (baselineRef.current) baselineRef.current.value = "";
       setBusy("");
     }
   };
 
-  const generateResume = async () => {
-    if (!analysis || !selected) return;
-    if (!status?.baseline_resume_configured) {
-      setMessage({ kind: "error", text: "Upload a baseline DOCX before generating a tailored copy." });
+  const uploadReferences = async (files: FileList | null) => {
+    const selectedFiles = files ? Array.from(files) : [];
+    if (!selectedFiles.length) return;
+    if (!driveReady) {
+      setMessage({ kind: "error", text: "Reconnect Google before adding Drive reference files." });
       return;
     }
-    setBusy("resume");
-    setResume(null);
-    setMessage({ kind: "info", text: "Creating a truth-preserving resume plan and verifying the DOCX…" });
+    setBusy("references");
+    setMessage({ kind: "info", text: `Validating and storing ${selectedFiles.length} reference file(s) in Drive...` });
     try {
-      const response = await api.generateResume({
+      const nextStatus = await api.uploadReferenceDocuments(selectedFiles);
+      setStatus(nextStatus);
+      setGeneration(null);
+      setMessage({ kind: "success", text: `${selectedFiles.length} reference file(s) are available for truthful evidence matching.` });
+    } catch (error) {
+      setMessage({ kind: "error", text: (error as Error).message });
+    } finally {
+      if (referencesRef.current) referencesRef.current.value = "";
+      setBusy("");
+    }
+  };
+
+  const toggleOutput = (kind: GeneratedArtifactKind) => {
+    setOutputs((current) => current.includes(kind)
+      ? current.filter((value) => value !== kind)
+      : [...current, kind]);
+    setGeneration(null);
+  };
+
+  const generateDocuments = async () => {
+    if (!analysis || !selected) return;
+    if (!status?.baseline_resume_configured) {
+      setMessage({ kind: "error", text: "Add a baseline DOCX to the Drive library before generating documents." });
+      return;
+    }
+    if (!driveReady) {
+      setMessage({ kind: "error", text: "Reconnect Google before generating Drive documents." });
+      return;
+    }
+    if (!outputs.length) {
+      setMessage({ kind: "error", text: "Select at least one output: DOCX, PDF, or cover letter." });
+      return;
+    }
+    setBusy("documents");
+    setGeneration(null);
+    setMessage({ kind: "info", text: "Creating, validating, and uploading the selected documents to Drive..." });
+    try {
+      const response = await api.generateDocuments({
         analysisId: analysis.analysis_id,
         officialJobId: selected.official_job_id,
-        uploadToDrive,
+        outputs,
+        confirmedSkillEvidence: confirmedEvidence,
       });
-      setResume(response.resume);
-      setMessage({ kind: "success", text: "Tailored draft created. Review it before applying." });
+      setGeneration(response.generation);
+      setMessage({ kind: "success", text: `${response.generation.artifacts.length} document(s) created in the dated Drive Resumes folder.` });
     } catch (error) {
       setMessage({ kind: "error", text: (error as Error).message });
     } finally {
@@ -198,30 +409,93 @@ export default function JobIntelligencePanel({
       <section className="intelligence-panel" role="dialog" aria-modal="true" aria-labelledby="intelligence-title">
         <header>
           <div>
-            <p className="eyebrow">Manual · per job</p>
-            <h2 id="intelligence-title">Official JD, eligibility & resume</h2>
-            <p>{text(job.title)} · {text(job.company)}{text(job.location) ? ` · ${text(job.location)}` : ""}</p>
+            <p className="eyebrow">Manual / per job</p>
+            <h2 id="intelligence-title">Official JD, eligibility and documents</h2>
+            <p>{text(job.title)} / {text(job.company)}{text(job.location) ? ` / ${text(job.location)}` : ""}</p>
           </div>
-          <button className="icon-button" type="button" onClick={onClose} disabled={Boolean(busy)} aria-label="Close job tool">×</button>
+          <button className="icon-button" type="button" onClick={onClose} disabled={Boolean(busy)} aria-label="Close job tool">x</button>
         </header>
 
         <div className="intelligence-body">
           {message && <div className={`inline-message ${message.kind}`}>{message.text}</div>}
 
           <section className="privacy-strip">
-            <span>{status?.openai_configured ? `Luna ready · ${status.model}` : "OpenAI key not configured"}</span>
-            <span>{status?.baseline_resume_configured ? `Baseline ready · ${status.baseline_resume_name}` : "Baseline resume needed"}</span>
+            <span>{status?.openai_configured ? `Luna ready / ${status.model}` : "OpenAI key not configured"}</span>
+            <span>{driveReady ? "Google Drive connected" : "Google Drive connection required"}</span>
             <span>No Gmail body, contacts, or connection data sent</span>
+          </section>
+
+          <section className="manual-action-card library-card">
+            <div className="section-heading-row">
+              <div>
+                <h3>Drive resume library</h3>
+                <p>The active baseline is immutable. Uploading another resume creates a new version instead of changing the original.</p>
+              </div>
+              {status?.library_url && <a className="secondary-button" href={status.library_url} target="_blank" rel="noreferrer">Open library</a>}
+            </div>
+
+            <div className="library-status-grid">
+              <div className="library-status-item">
+                <small>Active baseline</small>
+                <strong>{status?.baseline_resume_name || "Not configured"}</strong>
+                {status?.baseline_uploaded_at && <span>Stored {status.baseline_uploaded_at}</span>}
+                {status?.baseline_drive_url && <a href={status.baseline_drive_url} target="_blank" rel="noreferrer">Open baseline in Drive</a>}
+              </div>
+              <div className="library-status-item">
+                <small>Reference documents</small>
+                <strong>{status?.reference_document_count ?? 0} available</strong>
+                <span>Only supported, contact-free evidence is considered during planning.</span>
+              </div>
+            </div>
+
+            {status?.message && <p className="resume-warning">{status.message}</p>}
+
+            <div className="library-actions">
+              <label className={`secondary-button file-action-label ${!driveReady || Boolean(busy) ? "disabled" : ""}`}>
+                Add new baseline DOCX
+                <input
+                  ref={baselineRef}
+                  className="visually-hidden"
+                  type="file"
+                  accept=".docx,application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+                  onChange={(event) => uploadBaseline(event.target.files?.[0])}
+                  disabled={!driveReady || Boolean(busy)}
+                />
+              </label>
+              <label className={`secondary-button file-action-label ${!driveReady || Boolean(busy) ? "disabled" : ""}`}>
+                Add reference files
+                <input
+                  ref={referencesRef}
+                  className="visually-hidden"
+                  type="file"
+                  multiple
+                  accept=".docx,.md,.txt,application/vnd.openxmlformats-officedocument.wordprocessingml.document,text/markdown,text/plain"
+                  onChange={(event) => uploadReferences(event.target.files)}
+                  disabled={!driveReady || Boolean(busy)}
+                />
+              </label>
+            </div>
+
+            {Boolean(status?.reference_documents?.length) && (
+              <ul className="reference-list">
+                {status?.reference_documents?.map((reference) => (
+                  <li key={reference.sha256}>
+                    <a href={reference.drive_url} target="_blank" rel="noreferrer">{reference.original_name}</a>
+                    <span>{reference.uploaded_at || "Stored in Drive"}</span>
+                  </li>
+                ))}
+              </ul>
+            )}
           </section>
 
           <section className="manual-action-card">
             <div>
               <h3>1. Find the official posting and score eligibility</h3>
-              <p>This button checks the private cache first. Only a new or explicitly refreshed job creates a Luna web-research call.</p>
+              <p>This checks the private cache first. A new or refreshed supported ATS job uses its exact public JD; other jobs use exact-only Luna web research when an official URL is already known.</p>
             </div>
             <div className="action-row">
               <button className="primary-button" type="button" disabled={Boolean(busy) || !status?.openai_configured} onClick={() => runAnalysis(false)}>
-                {busy === "analysis" ? "Analyzing…" : analysis ? "Load / reuse analysis" : "Find official JD + score"}
+                {busy === "analysis" ? "Analyzing..." : analysis ? "Load / reuse analysis" : "Find official JD + score"}
               </button>
               {analysis && <button className="secondary-button" type="button" disabled={Boolean(busy)} onClick={() => runAnalysis(true)}>Refresh with Luna</button>}
             </div>
@@ -234,7 +508,7 @@ export default function JobIntelligencePanel({
                   <h3>Official candidates</h3>
                   <p>Identity score and resume eligibility are intentionally separate.</p>
                 </div>
-                <span className="safe-badge">{analysis.cached ? "Cache reused · no new research call" : `Researched ${analysis.verified_at}`}</span>
+                <span className="safe-badge">{analysis.cached ? "Cache reused / no new research call" : `Researched ${analysis.verified_at}`}</span>
               </div>
               {analysis.candidates.length ? analysis.candidates.map((candidate) => (
                 <CandidateCard
@@ -242,6 +516,8 @@ export default function JobIntelligencePanel({
                   candidate={candidate}
                   selected={candidate.official_job_id === selectedId}
                   onSelect={() => chooseCandidate(candidate)}
+                  evidenceDrafts={evidenceDrafts}
+                  onEvidenceChange={updateEvidence}
                 />
               )) : <div className="empty-inline">No verified official candidate is available for this alert.</div>}
             </section>
@@ -249,41 +525,59 @@ export default function JobIntelligencePanel({
 
           <section className="manual-action-card resume-action-card">
             <div>
-              <h3>2. Generate a tailored DOCX draft</h3>
-              <p>The model writes a supported summary and ranks existing evidence. It cannot add or rewrite achievements, employers, dates, or metrics.</p>
+              <h3>2. Choose and generate application documents</h3>
+              <p>The model may position documented or explicitly user-confirmed evidence. It cannot alter the baseline, invent achievements, or submit an application.</p>
             </div>
-            <div className="baseline-controls">
-              <input
-                ref={fileRef}
-                type="file"
-                accept=".docx,application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-                onChange={(event) => uploadBaseline(event.target.files?.[0])}
-                disabled={Boolean(busy)}
-              />
-              <label className="toggle-row compact">
-                <input type="checkbox" checked={uploadToDrive} disabled={!googleConnected || Boolean(busy)} onChange={(event) => setUploadToDrive(event.target.checked)} />
-                <span>Upload generated draft to Job Hunt / date / Resumes</span>
-              </label>
+            <div className="output-options" role="group" aria-label="Generated document formats">
+              {(Object.keys(OUTPUT_LABELS) as GeneratedArtifactKind[]).map((kind) => (
+                <label className="toggle-row output-option" key={kind}>
+                  <input
+                    type="checkbox"
+                    checked={outputs.includes(kind)}
+                    disabled={Boolean(busy)}
+                    onChange={() => toggleOutput(kind)}
+                  />
+                  <span>{OUTPUT_LABELS[kind]}</span>
+                </label>
+              ))}
             </div>
-            <button className="primary-button" type="button" disabled={Boolean(busy) || !selected || !status?.baseline_resume_configured} onClick={generateResume}>
-              {busy === "resume" ? "Generating and verifying…" : "Generate tailored DOCX"}
+            <div className={`confirmed-evidence-summary ${confirmedEvidence.length ? "ready" : ""}`}>
+              <strong>{confirmedEvidence.length} confirmed JD keyword{confirmedEvidence.length === 1 ? "" : "s"}</strong>
+              <span>
+                {confirmedEvidence.length
+                  ? "These exact terms will be added to Technical Skills in the generated copy."
+                  : "No gap keywords will be added unless you provide evidence and confirm it."}
+              </span>
+            </div>
+            <p className="drive-destination">Selected files are uploaded to <strong>Job Hunt / YYYY-MM-DD / Resumes</strong>.</p>
+            <button
+              className="primary-button"
+              type="button"
+              disabled={Boolean(busy) || !selected || !status?.baseline_resume_configured || !driveReady || !outputs.length}
+              onClick={generateDocuments}
+            >
+              {busy === "documents" ? "Generating and verifying..." : `Generate ${outputs.length || 0} selected document${outputs.length === 1 ? "" : "s"}`}
             </button>
           </section>
 
-          {resume && (
+          {generation && (
             <section className="resume-result">
-              <div>
-                <h3>Draft ready</h3>
-                <p>{resume.file_name}</p>
+              <div className="section-heading-row">
+                <div>
+                  <h3>Application documents ready</h3>
+                  <p>{generation.artifacts.length} verified file(s) / generated {generation.generated_at}</p>
+                </div>
+                {generation.artifacts[0]?.folder_url && <a className="secondary-button" href={generation.artifacts[0].folder_url} target="_blank" rel="noreferrer">Open Drive folder</a>}
               </div>
-              <div className="action-row">
-                <a className="primary-button" href={resume.download_url}>Download DOCX</a>
-                {resume.drive_url && <a className="secondary-button" href={resume.drive_url} target="_blank" rel="noreferrer">Open in Drive ↗</a>}
+              <div className="artifact-grid">
+                {generation.artifacts.map((artifact) => <ArtifactCard artifact={artifact} key={artifact.artifact_id} />)}
               </div>
-              {resume.keyword_alignment.length > 0 && <><h4>Supported keywords emphasized</h4><SkillList values={resume.keyword_alignment} empty="" /></>}
-              {resume.change_notes.length > 0 && <><h4>What changed</h4><ul>{resume.change_notes.map((note) => <li key={note}>{note}</li>)}</ul></>}
-              {resume.warnings.map((warning) => <p className="resume-warning" key={warning}>{warning}</p>)}
-              <p className="review-warning"><strong>Review required:</strong> this is an application draft, not an automatically submitted resume.</p>
+              {generation.reference_points_used.length > 0 && <><h4>Reference evidence used</h4><ul>{generation.reference_points_used.map((point) => <li key={point}>{point}</li>)}</ul></>}
+              {generation.confirmed_skills_added.length > 0 && <><h4>User-confirmed skills added</h4><SkillList values={generation.confirmed_skills_added} empty="" /></>}
+              {generation.keyword_alignment.length > 0 && <><h4>Supported keywords emphasized</h4><SkillList values={generation.keyword_alignment} empty="" /></>}
+              {generation.change_notes.length > 0 && <><h4>What changed</h4><ul>{generation.change_notes.map((note) => <li key={note}>{note}</li>)}</ul></>}
+              {generation.warnings.map((warning) => <p className="resume-warning" key={warning}>{warning}</p>)}
+              <p className="review-warning"><strong>Review required:</strong> these are application drafts and were not submitted anywhere.</p>
             </section>
           )}
         </div>

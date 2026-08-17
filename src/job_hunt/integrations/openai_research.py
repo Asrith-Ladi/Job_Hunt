@@ -8,18 +8,21 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from collections import defaultdict
 from datetime import date
 from math import ceil
-from typing import Callable, Iterable
+from typing import Any, Callable, Iterable, Mapping
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from job_hunt.enrichment import canonical_company, normalize_text
+from job_hunt.experience import extract_experience_range
 
 
 DEFAULT_OPENAI_MODEL = "gpt-5.6-luna"
 MAX_ALERTS_PER_COMPANY_CALL = 8
 MAX_CANDIDATES_PER_ALERT = 3
+MAX_EXACT_DESCRIPTION_CHARS = 40_000
 
 _BLOCKED_SOURCE_DOMAINS = {
     "adzuna.com",
@@ -149,6 +152,41 @@ RESEARCH_RESPONSE_SCHEMA = {
     "required": ["results"],
 }
 
+SKILL_EVIDENCE_SCHEMA = {
+    "type": "object",
+    "additionalProperties": False,
+    "properties": {
+        "label": {"type": "string"},
+        "evidence": {"type": "string"},
+    },
+    "required": ["label", "evidence"],
+}
+
+EXACT_POSTING_EXTRACTION_SCHEMA = {
+    "type": "object",
+    "additionalProperties": False,
+    "properties": {
+        "description_summary": {"type": "string"},
+        "experience_evidence": {"type": "string"},
+        "required_skills": {
+            "type": "array",
+            "maxItems": 20,
+            "items": SKILL_EVIDENCE_SCHEMA,
+        },
+        "preferred_skills": {
+            "type": "array",
+            "maxItems": 12,
+            "items": SKILL_EVIDENCE_SCHEMA,
+        },
+    },
+    "required": [
+        "description_summary",
+        "experience_evidence",
+        "required_skills",
+        "preferred_skills",
+    ],
+}
+
 
 SYSTEM_INSTRUCTIONS = """You research current public job postings for a personal job tracker.
 
@@ -167,6 +205,32 @@ Safety and evidence rules:
 - Keep description_summary to three to six concise paraphrased sentences.
 - The official match score measures alert-to-posting identity only, not resume eligibility.
 - Empty strings, empty arrays, or null numeric ranges are required when evidence is absent.
+"""
+
+EXACT_POSTING_INSTRUCTIONS = """You extract structured facts from one exact official job
+description supplied by the application. Do not search for or mention another job.
+
+Evidence rules:
+- Use only the supplied exact_description.
+- Every required or preferred skill must include a short verbatim evidence fragment that occurs
+  in exact_description. Do not infer adjacent technologies, tools, databases, frameworks, or
+  credentials.
+- Treat skills in explicit requirements/qualifications as required. Treat only explicitly
+  optional, preferred, or bonus qualifications as preferred.
+- experience_evidence must be a verbatim fragment containing an explicitly stated numeric years
+  requirement, or an empty string when none is stated.
+- description_summary must be a concise three-to-six-sentence paraphrase of this exact role.
+- Empty arrays are correct when reliable skill evidence is absent.
+"""
+
+EXACT_ONLY_RESEARCH_INSTRUCTIONS = """
+
+Exact-job policy for this request:
+- An official_url_hint identifies the selected job. Return only that exact URL or a URL carrying
+  the same provider job identifier.
+- Do not return a related, similar, replacement, or alternative opening.
+- If the exact posting cannot be verified, return an empty candidates list.
+- Never use match_status active_related for this request.
 """
 
 
@@ -231,9 +295,15 @@ def _same_company(expected: object, actual: object) -> bool:
     return min(len(left), len(right)) >= 5 and (left in right or right in left)
 
 
-def _stable_official_job_id(url: str) -> str:
+def stable_official_job_id(url: str) -> str:
     digest = hashlib.sha256(url.casefold().encode("utf-8")).hexdigest()[:16]
     return f"official_{digest}"
+
+
+def _stable_official_job_id(url: str) -> str:
+    """Backward-compatible internal alias."""
+
+    return stable_official_job_id(url)
 
 
 def _safe_list(value: object, limit: int) -> list[str]:
@@ -252,6 +322,82 @@ def _safe_list(value: object, limit: int) -> list[str]:
     return result
 
 
+def _job_path_identifier(value: object) -> str:
+    try:
+        parts = [part for part in urlsplit(str(value or "")).path.split("/") if part]
+    except ValueError:
+        return ""
+    uuid_pattern = re.compile(
+        r"^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+        re.IGNORECASE,
+    )
+    for part in parts:
+        if uuid_pattern.fullmatch(part):
+            return part.casefold()
+    ignored = {"apply", "application", "job", "jobs", "careers"}
+    for part in reversed(parts):
+        normalized = part.casefold()
+        if normalized not in ignored:
+            return normalized
+    return ""
+
+
+def _same_job_identity(expected: object, actual: object) -> bool:
+    left = _clean_official_url(expected)
+    right = _clean_official_url(actual)
+    if not left or not right:
+        return False
+    if left.casefold().rstrip("/") == right.casefold().rstrip("/"):
+        return True
+    left_id = _job_path_identifier(left)
+    right_id = _job_path_identifier(right)
+    return bool(left_id and right_id and left_id == right_id)
+
+
+def _normalized_grounding(value: object) -> str:
+    return re.sub(r"\s+", " ", str(value or "").casefold()).strip()
+
+
+def _evidence_occurs(evidence: object, description: object) -> bool:
+    needle = _normalized_grounding(evidence)
+    haystack = _normalized_grounding(description)
+    return len(needle) >= 2 and needle in haystack
+
+
+def _grounded_skills(
+    values: object,
+    description: str,
+    limit: int,
+) -> tuple[list[str], dict[str, str]]:
+    if not isinstance(values, list):
+        return [], {}
+    labels: list[str] = []
+    evidence_by_label: dict[str, str] = {}
+    seen: set[str] = set()
+    for value in values:
+        item = value if isinstance(value, Mapping) else {}
+        label = str(item.get("label") or "").strip()[:120]
+        evidence = str(item.get("evidence") or "").strip()[:500]
+        key = normalize_text(label)
+        if not label or not key or key in seen or not _evidence_occurs(evidence, description):
+            continue
+        seen.add(key)
+        labels.append(label)
+        evidence_by_label[label] = evidence
+        if len(labels) >= limit:
+            break
+    return labels, evidence_by_label
+
+
+def _fallback_exact_summary(description: str) -> str:
+    sentences = [
+        item.strip()
+        for item in re.split(r"(?<=[.!?])\s+", str(description or "").strip())
+        if item.strip()
+    ]
+    return " ".join(sentences[:4])[:1200]
+
+
 def _numeric_or_none(value: object):
     if value in (None, ""):
         return None
@@ -261,7 +407,7 @@ def _numeric_or_none(value: object):
         return None
 
 
-def _normalized_alert(job: dict) -> dict[str, object]:
+def _normalized_alert(job: dict, *, exact_only: bool = False) -> dict[str, object]:
     """Return the only alert fields that may leave the local application."""
 
     normalized = {
@@ -274,6 +420,7 @@ def _normalized_alert(job: dict) -> dict[str, object]:
     official_url_hint = _clean_official_url(job.get("official_url"))
     if official_url_hint:
         normalized["official_url_hint"] = official_url_hint
+    normalized["match_policy"] = "exact_only" if exact_only else "related_allowed"
     return normalized
 
 
@@ -286,6 +433,7 @@ def _alert_fingerprint(alert: dict) -> str:
             "location",
             "experience_text",
             "official_url_hint",
+            "match_policy",
         )
     }
     serialized = json.dumps(
@@ -309,10 +457,6 @@ def pending_research_jobs(
         for alert_id, fingerprint in (existing.get("checked_alert_fingerprints") or {}).items()
         if fingerprint
     }
-    trusted_checked = {
-        str(alert_id) for alert_id in (existing.get("matches") or {}) if alert_id
-    }
-
     pending_by_id = {}
     for job in jobs:
         alert = _normalized_alert(job)
@@ -320,7 +464,7 @@ def pending_research_jobs(
         if not alert_id or alert_id in pending_by_id:
             continue
         fingerprint = _alert_fingerprint(alert)
-        if alert_id in trusted_checked or stored_fingerprints.get(alert_id) == fingerprint:
+        if stored_fingerprints.get(alert_id) == fingerprint:
             continue
         pending_by_id[alert_id] = dict(job)
 
@@ -346,7 +490,7 @@ class OfficialJobResearcher:
             client = OpenAI(api_key=str(api_key).strip())
         self.client = client
 
-    def _research_company_batch(self, alerts: list[dict]) -> dict:
+    def _research_company_batch(self, alerts: list[dict], *, exact_only: bool = False) -> dict:
         company = str(alerts[0].get("company") or "unknown employer")
         prompt = (
             f"Research date: {date.today().isoformat()}\n"
@@ -358,7 +502,11 @@ class OfficialJobResearcher:
             response = self.client.responses.create(
                 model=self.model,
                 input=[
-                    {"role": "system", "content": SYSTEM_INSTRUCTIONS},
+                    {
+                        "role": "system",
+                        "content": SYSTEM_INSTRUCTIONS
+                        + (EXACT_ONLY_RESEARCH_INSTRUCTIONS if exact_only else ""),
+                    },
                     {"role": "user", "content": prompt},
                 ],
                 tools=[{"type": "web_search"}],
@@ -383,6 +531,109 @@ class OfficialJobResearcher:
                 f"Official-job research failed for {company} ({type(exc).__name__})."
             ) from exc
 
+    def extract_exact_posting(
+        self,
+        job: Mapping[str, Any],
+        exact_source: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        """Extract only evidence grounded in one exact ATS description."""
+
+        description = str(exact_source.get("description") or "").strip()
+        if not description:
+            raise OpenAIResearchError("The exact official posting has no public description.")
+        description = description[:MAX_EXACT_DESCRIPTION_CHARS]
+        prompt = json.dumps(
+            {
+                "company": str(job.get("company") or "").strip(),
+                "exact_title": str(exact_source.get("title") or "").strip(),
+                "exact_location": str(exact_source.get("location") or "").strip(),
+                "exact_description": description,
+            },
+            ensure_ascii=False,
+            indent=2,
+        )
+        try:
+            response = self.client.responses.create(
+                model=self.model,
+                input=[
+                    {"role": "system", "content": EXACT_POSTING_INSTRUCTIONS},
+                    {"role": "user", "content": prompt},
+                ],
+                reasoning={"effort": "low"},
+                text={
+                    "verbosity": "low",
+                    "format": {
+                        "type": "json_schema",
+                        "name": "exact_official_job_extraction",
+                        "strict": True,
+                        "schema": EXACT_POSTING_EXTRACTION_SCHEMA,
+                    },
+                },
+                store=False,
+            )
+            output_text = str(getattr(response, "output_text", "") or "").strip()
+            if not output_text:
+                raise ValueError("The model returned no exact-job extraction.")
+            raw = json.loads(output_text)
+        except Exception as exc:
+            raise OpenAIResearchError(
+                f"Exact official-job extraction failed ({type(exc).__name__})."
+            ) from exc
+
+        required, required_evidence = _grounded_skills(
+            raw.get("required_skills"), description, 20
+        )
+        preferred, preferred_evidence = _grounded_skills(
+            raw.get("preferred_skills"), description, 12
+        )
+        experience_text = ""
+        experience_min = None
+        experience_max = None
+        experience_evidence = str(raw.get("experience_evidence") or "").strip()[:500]
+        if _evidence_occurs(experience_evidence, description):
+            experience = extract_experience_range(experience_evidence)
+            if experience is not None:
+                experience_text = experience_evidence
+                experience_min = experience.minimum
+                experience_max = experience.maximum
+
+        summary = str(raw.get("description_summary") or "").strip()[:1200]
+        if not summary:
+            summary = _fallback_exact_summary(description)
+        official_url = _clean_official_url(exact_source.get("official_url"))
+        if not official_url:
+            raise OpenAIResearchError("The exact official posting URL is invalid.")
+        board = str(exact_source.get("board") or "").strip()
+        return {
+            "official_job_id": stable_official_job_id(official_url),
+            "company": canonical_company(job.get("company")),
+            "title": str(exact_source.get("title") or "").strip(),
+            "location": str(exact_source.get("location") or "").strip(),
+            "experience_text": experience_text,
+            "experience_min": experience_min,
+            "experience_max": experience_max,
+            "workplace_type": str(exact_source.get("workplace_type") or "").strip(),
+            "employment_type": str(exact_source.get("employment_type") or "").strip(),
+            "active_status": "active",
+            "requisition_id": str(exact_source.get("external_job_id") or "").strip(),
+            "published_at": str(exact_source.get("published_at") or "").strip(),
+            "official_url": official_url,
+            "description_summary": summary,
+            "required_skills": required,
+            "preferred_skills": preferred,
+            "required_skill_evidence": required_evidence,
+            "preferred_skill_evidence": preferred_evidence,
+            "evidence_confidence": "high",
+            "source_notes": (
+                f"Exact job ID matched in Ashby's official public job-postings feed"
+                f"{f' for board {board}' if board else ''}. Skills without exact-JD evidence "
+                "were discarded."
+            ),
+            "exact_source_fingerprint": str(
+                exact_source.get("source_fingerprint") or ""
+            ).strip(),
+        }
+
     def research(
         self,
         jobs: list[dict],
@@ -391,6 +642,7 @@ class OfficialJobResearcher:
         refresh_existing: bool = False,
         max_new_alerts: int | None = None,
         progress: Callable[[int, int, str], None] | None = None,
+        exact_only: bool = False,
     ) -> dict:
         """Research missing alerts and return a merged, validated cache document."""
 
@@ -404,7 +656,7 @@ class OfficialJobResearcher:
             str(alert_id): [dict(item) for item in rows]
             for alert_id, rows in (existing.get("matches") or {}).items()
         }
-        alerts = [_normalized_alert(job) for job in jobs]
+        alerts = [_normalized_alert(job, exact_only=exact_only) for job in jobs]
         alerts = [item for item in alerts if item["alert_record_id"]]
         alerts_by_id = {str(item["alert_record_id"]): item for item in alerts}
         current_fingerprints = {
@@ -415,12 +667,11 @@ class OfficialJobResearcher:
             for alert_id, fingerprint in (existing.get("checked_alert_fingerprints") or {}).items()
             if fingerprint
         }
-        trusted_checked = set(matches)
-        trusted_checked.update(
+        trusted_checked = {
             alert_id
             for alert_id, fingerprint in current_fingerprints.items()
             if stored_fingerprints.get(alert_id) == fingerprint
-        )
+        }
         checked = set(stored_fingerprints) | set(matches)
         initially_checked = set(trusted_checked)
 
@@ -462,7 +713,7 @@ class OfficialJobResearcher:
             matches.pop(alert_id, None)
 
         for completed, batch in enumerate(batches, start=1):
-            raw = self._research_company_batch(batch)
+            raw = self._research_company_batch(batch, exact_only=exact_only)
             batch_by_id = {str(item["alert_record_id"]): item for item in batch}
             seen_ids = set()
             for result in raw.get("results") or []:
@@ -478,6 +729,13 @@ class OfficialJobResearcher:
                     official_url = _clean_official_url(candidate.get("official_url"))
                     if not official_url:
                         continue
+                    expected_url = _clean_official_url(alert.get("official_url_hint"))
+                    if exact_only and (
+                        not expected_url or not _same_job_identity(expected_url, official_url)
+                    ):
+                        continue
+                    if exact_only:
+                        official_url = expected_url
                     official_id = _stable_official_job_id(official_url)
                     active_status = str(candidate.get("active_status") or "unknown")
                     if active_status not in _ACTIVE_STATUSES:
@@ -491,6 +749,9 @@ class OfficialJobResearcher:
                         match_score = max(0, min(100, int(candidate.get("match_score") or 0)))
                     except (TypeError, ValueError):
                         match_score = 0
+                    if exact_only and match_status != "closed_reference":
+                        match_status = "exact_candidate"
+                        match_score = 100
 
                     posting = {
                         "official_job_id": official_id,
@@ -525,7 +786,11 @@ class OfficialJobResearcher:
                             "official_job_id": official_id,
                             "match_status": match_status,
                             "match_score": match_score,
-                            "match_reason": str(candidate.get("match_reason") or "").strip(),
+                            "match_reason": (
+                                "Exact provider job identifier matched the selected official URL."
+                                if exact_only
+                                else str(candidate.get("match_reason") or "").strip()
+                            ),
                         }
                     )
                 if mapping_rows:

@@ -126,6 +126,7 @@ class DiscoveryServiceTests(unittest.TestCase):
                 ):
                     first = service.run(options)
                     self.assertEqual(len(first["rows"]), 1)
+                    self.assertEqual(first["rows"][0]["run_change_status"], "new")
                     self.assertEqual(first["source_checks"][0]["status"], "success")
                     self.assertTrue((root / "outputs" / "company_portal_runs").is_dir())
                     latest = service.latest(COMPANY_PORTALS)
@@ -138,11 +139,21 @@ class DiscoveryServiceTests(unittest.TestCase):
                     self.assertEqual(saved["rows"][0]["notes"], "Apply after review")
 
                     second = service.run(options)
-                    self.assertEqual(second["rows"], [])
+                    self.assertEqual(len(second["rows"]), 1)
+                    self.assertEqual(
+                        second["rows"][0]["run_change_status"],
+                        "previously_seen",
+                    )
+                    self.assertEqual(second["rows"][0]["application_status"], "reviewing")
+                    self.assertEqual(
+                        second["summary"]["jobs_new_or_changed_this_run"],
+                        0,
+                    )
                     self.assertEqual(
                         second["summary"]["jobs_unchanged_from_prior_runs"],
                         1,
                     )
+                    self.assertEqual(second["summary"]["jobs_exported_this_run"], 1)
             finally:
                 raw.close()
 
