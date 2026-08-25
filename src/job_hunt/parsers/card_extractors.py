@@ -3,8 +3,8 @@
 import re
 from html.parser import HTMLParser
 
-from job_hunt.dedupe import canonicalize_url
-from job_hunt.experience import experience_text_from_url
+from job_hunt.jobs.dedupe import canonicalize_url
+from job_hunt.jobs.experience import experience_text_from_url
 
 
 def _clean_text(parts):

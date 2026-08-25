@@ -4,7 +4,7 @@ from pathlib import Path
 
 from openpyxl import Workbook
 
-from job_hunt.gmail_referrals import enrich_gmail_referrals, load_registry_connections
+from job_hunt.network.referrals import enrich_gmail_referrals, load_registry_connections
 
 
 HEADERS = [
@@ -115,6 +115,16 @@ class GmailReferralTests(unittest.TestCase):
         self.assertIn("Official JD requirements have not been checked", row["referral_eligibility"])
         self.assertIn("could you please refer me", row["referral_message"])
         self.assertIn("https://careers.example/jobs/1", row["referral_message"])
+        candidates = row["referral_candidates"]
+        self.assertEqual([candidate["name"] for candidate in candidates], [
+            "Talent Person",
+            "Technical Person",
+        ])
+        self.assertEqual(
+            candidates[1]["profile_url"],
+            "https://www.linkedin.com/in/technical-person",
+        )
+        self.assertTrue(candidates[1]["message"].startswith("Hi Technical"))
         self.assertNotIn("sensitive-email", str(row))
         self.assertEqual(stats["jobs_with_referral_candidate"], 1)
         self.assertEqual(stats["offline_connections_loaded"], 2)
@@ -125,6 +135,7 @@ class GmailReferralTests(unittest.TestCase):
             Path("missing-registry.xlsx"),
         )
         self.assertEqual(rows[0]["referral_count"], 0)
+        self.assertEqual(rows[0]["referral_candidates"], [])
         self.assertEqual(rows[0]["referral_match_status"], "connections_unavailable")
         self.assertEqual(stats["referral_enrichment_status"], "connections_unavailable")
 

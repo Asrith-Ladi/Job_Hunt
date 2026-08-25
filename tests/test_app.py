@@ -3,13 +3,13 @@ from datetime import datetime
 import tempfile
 from pathlib import Path
 
-from job_hunt.gmail_service import (
-    AppPaths,
+from job_hunt.gmail.service import (
     DEFAULT_LOOKBACK_DAYS,
     DEFAULT_SOURCE_LABELS,
     GmailWorkflowService,
     build_gmail_query,
 )
+from job_hunt.runtime.paths import AppPaths
 
 
 class AppQueryTests(unittest.TestCase):

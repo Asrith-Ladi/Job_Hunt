@@ -1,4 +1,11 @@
-import type { DiscoveryRunArtifact, JobRow, RunArtifact, Scalar } from "./types";
+import type {
+  DiscoveryRunArtifact,
+  JobRow,
+  ReferralCandidate,
+  RunArtifact,
+  SavedApplication,
+  Scalar,
+} from "./types";
 
 export type WorkspaceSource = "gmail" | "company_portals" | "ats_sources";
 export type WorkspaceRun = RunArtifact | DiscoveryRunArtifact;
@@ -9,6 +16,10 @@ export interface QueueItem {
   source: WorkspaceSource;
   runId: string;
   row: JobRow;
+  referralCandidates: ReferralCandidate[];
+  persisted: boolean;
+  currentResult: boolean;
+  applicationId: string;
 }
 
 export interface QueueGroup {
@@ -53,16 +64,72 @@ function rowRecordId(source: WorkspaceSource, row: JobRow, index: number): strin
   return `${source}:${supplied || index}`;
 }
 
-export function flattenRuns(runs: WorkspaceRuns): QueueItem[] {
-  return (Object.entries(runs) as Array<[WorkspaceSource, WorkspaceRun | null]>).flatMap(
+function persistenceKeys(source: WorkspaceSource, row: JobRow): string[] {
+  const recordId = scalarText(row.job_record_id ?? row.external_job_id);
+  if (recordId) return [`${source}|record|${recordId}`];
+  const officialUrl = scalarText(row.official_url).replace(/[?#].*$/, "").replace(/\/$/, "").toLocaleLowerCase();
+  if (officialUrl) return [`${source}|official|${officialUrl}`];
+  const sourceUrl = scalarText(row.source_url).replace(/[?#].*$/, "").replace(/\/$/, "").toLocaleLowerCase();
+  if (sourceUrl) return [`${source}|source|${sourceUrl}`];
+  const facts = [row.company, row.title, row.location].map(normalized).join("|");
+  return facts.replaceAll("|", "") ? [`${source}|facts|${facts}`] : [];
+}
+
+function mergedRow(current: JobRow, saved: JobRow): JobRow {
+  const output: JobRow = { ...saved, ...current };
+  for (const key of ["official_url", "apply_url", "notes", "application_status"] as const) {
+    if (scalarText(saved[key])) output[key] = saved[key];
+  }
+  return output;
+}
+
+export function flattenRuns(
+  runs: WorkspaceRuns,
+  applications: SavedApplication[] = [],
+): QueueItem[] {
+  const savedByKey = new Map<string, SavedApplication>();
+  applications.forEach((application) => {
+    persistenceKeys(application.source, application.row).forEach((key) => {
+      if (!savedByKey.has(key)) savedByKey.set(key, application);
+    });
+  });
+  const usedApplications = new Set<string>();
+  const currentItems = (Object.entries(runs) as Array<[WorkspaceSource, WorkspaceRun | null]>).flatMap(
     ([source, run]) =>
-      (run?.rows ?? []).map((row, index) => ({
-        id: rowRecordId(source, row, index),
-        source,
-        runId: run?.run_id ?? "",
-        row,
-      })),
+      (run?.rows ?? []).map((sourceRow, index) => {
+        const saved = persistenceKeys(source, sourceRow)
+          .map((key) => savedByKey.get(key))
+          .find(Boolean);
+        if (saved) usedApplications.add(saved.application_id);
+        const row = saved ? mergedRow(sourceRow, saved.row) : sourceRow;
+        const recordId = scalarText(row.job_record_id ?? row.external_job_id);
+        return {
+          id: rowRecordId(source, row, index),
+          source,
+          runId: run?.run_id ?? "",
+          row,
+          referralCandidates: recordId
+            ? run?.referral_candidates?.[recordId] ?? saved?.referral_candidates ?? []
+            : saved?.referral_candidates ?? [],
+          persisted: Boolean(saved),
+          currentResult: Boolean(run?.transient),
+          applicationId: saved?.application_id ?? "",
+        };
+      }),
   );
+  const savedOnly = applications
+    .filter((application) => !usedApplications.has(application.application_id))
+    .map((application, index) => ({
+      id: `saved:${application.application_id}`,
+      source: application.source,
+      runId: "application_queue",
+      row: application.row,
+      referralCandidates: application.referral_candidates ?? [],
+      persisted: true,
+      currentResult: false,
+      applicationId: application.application_id,
+    } satisfies QueueItem));
+  return [...currentItems, ...savedOnly];
 }
 
 function possibleMatchKey(item: QueueItem): string {

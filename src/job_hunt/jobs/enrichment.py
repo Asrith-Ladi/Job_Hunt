@@ -1,4 +1,4 @@
-"""Deterministic enrichment helpers for the personal production tracker.
+"""Deterministic job eligibility and network-enrichment rules.
 
 The module deliberately keeps official-job matching separate from resume eligibility.
 An employer/title/location match answers "is this probably the same opening?" while an
@@ -12,6 +12,9 @@ import re
 from dataclasses import dataclass
 from itertools import islice
 from pathlib import Path
+from typing import Iterable
+
+from job_hunt.jobs.skills import map_job_skills_to_evidence, normalize_skill_text
 
 
 @dataclass(frozen=True)
@@ -248,7 +251,12 @@ def _role_points(title: str) -> tuple[int, str | None]:
     return points, gap
 
 
-def score_official_posting(posting: dict, profile: ResumeProfile) -> dict[str, object]:
+def score_official_posting(
+    posting: dict,
+    profile: ResumeProfile,
+    *,
+    evidence_items: Iterable[object] | None = None,
+) -> dict[str, object]:
     """Return an explainable 100-point resume-to-posting assessment."""
 
     experience, experience_reason = experience_points(
@@ -259,8 +267,33 @@ def score_official_posting(posting: dict, profile: ResumeProfile) -> dict[str, o
     required = [str(item) for item in posting.get("required_skills") or []]
     required_keys = {normalize_text(item): item for item in required if normalize_text(item)}
     resume_keys = {normalize_text(item) for item in profile.skills}
-    matched = [label for key, label in required_keys.items() if key in resume_keys]
-    missing = [label for key, label in required_keys.items() if key not in resume_keys]
+    comparison_evidence = list(evidence_items or [])
+    if not comparison_evidence:
+        comparison_evidence = [
+            {"id": f"profile_skill_{index}", "text": value, "kind": "skill"}
+            for index, value in enumerate(sorted(profile.skills))
+        ] + [
+            {"id": f"profile_evidence_{index}", "text": value, "kind": "evidence"}
+            for index, value in enumerate(profile.evidence)
+        ]
+    mappings = map_job_skills_to_evidence(required, comparison_evidence)
+    mapping_by_key = {
+        normalize_skill_text(item.get("skill")): item
+        for item in mappings
+        if normalize_skill_text(item.get("skill"))
+    }
+    matched = [
+        label
+        for label in required
+        if normalize_skill_text(label) in mapping_by_key
+    ]
+    missing = [label for label in required if label not in matched]
+    exact_matched = [
+        label
+        for label in matched
+        if mapping_by_key[normalize_skill_text(label)].get("match_type") == "exact"
+    ]
+    equivalent_matched = [label for label in matched if label not in exact_matched]
     skills = round(40 * len(matched) / len(required_keys)) if required_keys else 20
 
     role, seniority_gap = _role_points(posting.get("title") or "")
@@ -310,6 +343,18 @@ def score_official_posting(posting: dict, profile: ResumeProfile) -> dict[str, o
         "band": band,
         "confidence": posting.get("evidence_confidence") or "medium",
         "matched_skills": matched,
+        "exact_matched_skills": exact_matched,
+        "equivalent_matched_skills": equivalent_matched,
+        "skill_match_evidence": {
+            label: {
+                "match_type": mapping_by_key[normalize_skill_text(label)]["match_type"],
+                "evidence_ids": mapping_by_key[normalize_skill_text(label)]["evidence_ids"],
+                "evidence_kinds": mapping_by_key[normalize_skill_text(label)][
+                    "evidence_kinds"
+                ],
+            }
+            for label in matched
+        },
         "missing_skills": missing,
         "gaps": gaps,
         "experience_reason": experience_reason,

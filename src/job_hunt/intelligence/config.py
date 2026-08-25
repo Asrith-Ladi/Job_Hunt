@@ -1,4 +1,4 @@
-"""Server-only OpenAI configuration for the personal job-hunt application."""
+"""Server-only OpenAI configuration for the job-intelligence workflow."""
 
 from __future__ import annotations
 
@@ -10,7 +10,7 @@ from pathlib import Path
 from job_hunt.integrations.openai_research import DEFAULT_OPENAI_MODEL
 
 
-_LEGACY_KEYS = {"OPENAI_API_KEY", "OPENAI_MODEL"}
+_SUPPORTED_KEYS = {"OPENAI_API_KEY", "OPENAI_MODEL"}
 _ENV_LINE = re.compile(
     r"^\s*(OPENAI_API_KEY|OPENAI_MODEL)\s*=\s*(.*?)\s*$",
     re.IGNORECASE,
@@ -55,18 +55,13 @@ def _read_key_values(path: Path) -> dict[str, str]:
         if not match:
             continue
         key = match.group(1).upper()
-        if key in _LEGACY_KEYS:
+        if key in _SUPPORTED_KEYS:
             values[key] = _unquote(match.group(2))
     return values
 
 
 def load_openai_settings(project_root: Path) -> OpenAISettings:
-    """Resolve environment first, then private local migration fallbacks.
-
-    ``.streamlit/secrets.toml`` remains readable only so the user's existing key keeps
-    working after Streamlit retirement. New local and deployed setups should use an
-    environment/deployment secret or the Git-ignored ``.env`` file.
-    """
+    """Resolve a deployment environment or the Git-ignored local ``.env`` file."""
 
     root = Path(project_root).resolve()
     environment_key = os.environ.get("OPENAI_API_KEY", "").strip()
@@ -78,22 +73,18 @@ def load_openai_settings(project_root: Path) -> OpenAISettings:
             source="environment",
         )
 
-    for path, source in (
-        (root / ".env", "private_env_file"),
-        (root / ".streamlit" / "secrets.toml", "legacy_streamlit_migration"),
-    ):
-        values = _read_key_values(path)
-        key = values.get("OPENAI_API_KEY", "").strip()
-        if key:
-            return OpenAISettings(
-                api_key=key,
-                model=(
-                    environment_model
-                    or values.get("OPENAI_MODEL", "").strip()
-                    or DEFAULT_OPENAI_MODEL
-                ),
-                source=source,
-            )
+    values = _read_key_values(root / ".env")
+    key = values.get("OPENAI_API_KEY", "").strip()
+    if key:
+        return OpenAISettings(
+            api_key=key,
+            model=(
+                environment_model
+                or values.get("OPENAI_MODEL", "").strip()
+                or DEFAULT_OPENAI_MODEL
+            ),
+            source="private_env_file",
+        )
 
     return OpenAISettings(
         api_key="",

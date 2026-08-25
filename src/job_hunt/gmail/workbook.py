@@ -15,7 +15,7 @@ from openpyxl.utils import get_column_letter
 from openpyxl.worksheet.datavalidation import DataValidation
 from openpyxl.worksheet.table import Table, TableStyleInfo
 
-from job_hunt.gmail_referrals import REFERRAL_COLUMNS
+from job_hunt.network.referrals import REFERRAL_COLUMNS
 from job_hunt.integrations.sheets import JOB_COLUMNS
 
 
@@ -40,6 +40,7 @@ EDITABLE_GMAIL_COLUMNS = {
 
 APPLICATION_STATUSES = [
     "not_started",
+    "saved",
     "reviewing",
     "shortlisted",
     "applied",

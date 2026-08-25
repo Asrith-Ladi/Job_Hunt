@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "personal-job-hunt"
-version = "0.1.0"
-description = "Personal Gmail-to-official-job research and tracker workflow"
+version = "0.2.0"
+description = "Private production workflow for job discovery, review, and application documents"
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
@@ -37,3 +37,4 @@ where = ["src"]
 [tool.ruff]
 line-length = 100
 target-version = "py310"
+src = ["src", "scripts", "tests"]

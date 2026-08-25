@@ -1,34 +1,39 @@
 # Personal Job Hunt
 
-The supported interface is React + TypeScript with a FastAPI backend. `Run Setup` conditionally configures Gmail alerts, Company Portals, and public ATS sources, then runs only the checked sources. `Job Queue` presents their latest results in one verification-first workspace while preserving every underlying source row and workbook. Likely duplicates are only grouped visually until the user verifies them. Gmail evidence keeps its alert URL separate from the official employer URL. Every job row also has an optional manual tool for official-JD research, separate eligibility scoring, and a truth-preserving tailored-resume draft. `Network Reviews` searches the saved LinkedIn export without creating a run workbook.
+The supported interface is React + TypeScript with a FastAPI backend. `Search` conditionally configures Gmail alerts, Company Portals, and public ATS sources, then searches only the checked sources. `Results & Applications` presents temporary results plus the permanent application queue in one verification-first workspace. Likely duplicates are only grouped visually until the user verifies them. Search itself creates no Drive workbook: Save for later, status changes, notes, and confirmed official URLs upsert one source record into `Job Hunt/Source/application_queue.json`. Existing dated Gmail files remain available as history. Every job row also has an optional manual official-JD, eligibility, and truth-preserving resume tool. `Network Reviews` searches the saved LinkedIn export without creating a run workbook.
 
-The approved Gmail foundation is in [Discussion 001](docs/discussions/001_gmail_alerts_to_google_sheet.md), the dated-workbook behavior in [Discussion 012](docs/discussions/012_streamlit_gmail_run_workbooks.md), the React/FastAPI migration in [Discussion 013](docs/discussions/013_react_fastapi_migration.md), the public-discovery phases in [Discussion 014](docs/discussions/014_company_portals_and_ats_sources.md), the manual job-intelligence boundary in [Discussion 018](docs/discussions/018_streamlit_retirement_and_job_intelligence.md), and the unified workflow in [Discussion 019](docs/discussions/019_unified_run_setup_and_job_queue.md). The large [automation plan](docs/reference/JOB_AUTOMATION_PLAN.md) remains background reference only.
+The active search/persistence design is in [Discussion 031](docs/discussions/031_transient_search_and_application_queue.md). The Gmail foundation, React/FastAPI migration, public discovery, manual job-intelligence boundary, unified workflow, and AI cost accounting remain documented in Discussions 001, 013, 014, 018, 019, and 026. The large [automation plan](docs/reference/JOB_AUTOMATION_PLAN.md) remains background reference only.
+
+The Python application is organized as bounded production packages rather than flat or
+demo modules. See [Production architecture](docs/ARCHITECTURE.md).
 
 ## Current status
 
 - React production build: passing.
-- Existing Python Gmail/parsing/workbook modules: retained.
+- Python source is divided into tested `gmail`, `jobs`, `network`, `resumes`, `intelligence`, `runtime`, `discovery`, `integrations`, and `parsers` packages.
 - FastAPI application-service and HTTP boundary: implemented and tested.
-- Gmail parsing, within-run deduplication, and cross-run new/changed filtering: implemented.
-- Each successful run creates `Job Hunt/YYYY-MM-DD/gmail_alerts_YYYY-MM-DD_HHMMSS.xlsx` in Drive.
-- `Job Hunt/Source` stores the canonical company registry and non-secret Gmail seen state; OAuth credentials, tokens, and raw email bodies are excluded.
-- Run Setup shares role, location, recency, experience, and result-limit intent while revealing only the settings needed by checked sources; each source completes or fails independently.
-- Job Queue supports search and useful review views, wraps long content, keeps official and alert links clickable, preserves every source row, visually groups unverified possible duplicates, and saves supported edits back to the correct source workbook and Drive file.
+- Gmail parsing and within-search deduplication are implemented; legacy cross-run workbooks remain reviewable but the active search path does not create or filter through them.
+- Explicit tracking actions upsert `Job Hunt/Source/application_queue.json`; ordinary source searches create no dated Drive artifact.
+- `Job Hunt/Source/Company_Source_Registry.xlsx` is the authoritative company registry. The backend downloads a changed Drive revision into a validated private runtime cache; normal Gmail, Company Portal, and ATS runs never upload that cache over the Drive workbook.
+- Search shares role, location, recency, experience, and result-limit intent while revealing only the settings needed by checked sources; each source completes or fails independently without creating a per-search artifact.
+- Results & Applications supports text/source/status/saved views, wraps long content, keeps official and alert links clickable, preserves every source row, visually groups unverified possible duplicates, and persists only explicit tracking actions to the canonical Drive queue.
 - Gmail rows are enriched offline from the saved LinkedIn snapshot with a cautious same-company referral lead, clickable profile, preliminary resume evidence, and a copy-ready LinkedIn request; connection emails and phones are excluded.
-- Company Portals loads all 210 unique registry companies, limits each manual batch to 10, prefers a documented structured source, then uses bounded official feed/JSON-LD/static/sitemap fallbacks.
+- Company Portals loads all 210 unique registry companies, limits each manual batch to 10, prefers a documented structured source, then uses bounded official feed/embedded ATS JSON/JSON-LD/static/sitemap fallbacks. Public Next.js data that contains exact Lever postings is normalized without executing page JavaScript.
+- The official-employer selector has counted filters for the five canonical workbook groups plus All and Selected views; category changes preserve the current batch and combine with company/provider search.
 - ATS Sources supports Greenhouse, Lever, Workable, and SmartRecruiters public adapters plus explicit detection-only fallbacks for undocumented company-specific platforms.
 - Manual analysis resolves UUID-based Ashby employer pages through the exact documented public posting feed, prohibits related-job substitution, and retains only skill labels backed by evidence from that exact JD.
 - Company Portal and ATS title/keyword filters use comma-separated alternatives with word/phrase-aware matching against available title, description, and department evidence; short terms such as `ai` do not match inside unrelated words.
-- Every currently matching Company Portal or ATS job is included in the dated workbook and Job Queue with a `new`, `changed`, or `previously_seen` run status. Incremental fingerprints classify jobs but no longer hide valid targeted-search results.
+- Every currently matching Company Portal or ATS job is included in the temporary result set. Saved jobs survive later searches and reloads through stable application IDs.
 - Network Reviews lists all 3,486 saved connections, including 3,448 LinkedIn profile links and 111 explicitly requested exported emails. All 18 columns are initially visible, names open LinkedIn, shared greeting/body templates support placeholders, and every row has a Copy message action; no LLM or Google connection is used.
-- Both public-discovery workbooks contain `Jobs`, `Source Checks`, and `Run Summary`; only application status and notes are editable.
-- Incremental state and generated Excel artifacts remain independent for Gmail, Company Portals, and ATS Sources even though their latest rows are reviewed together; current public-source matches remain visible without being mislabelled as new.
+- Source checks and run summaries remain on screen for the current search; no public-discovery workbook is created by the active UI.
+- Temporary result sets remain independent for Gmail, Company Portals, and ATS Sources while their rows are reviewed together; permanent application status is overlaid from the canonical queue by stable source identity.
 - Every Gmail, Company Portal, and ATS result row has a manual `Official JD + resume` action. Opening it is free; official research and resume tailoring are separate explicit Luna actions with private caches.
-- Official-posting identity and resume eligibility remain separate scores. The React panel shows the verified official URL, JD summary, requirements, documented matches, and honest gaps.
-- The private immutable baseline and references are stored in the app-owned Drive Resume Library. For an exact missing JD skill, the UI accepts a factual note and explicit confirmation; only confirmed, contact-free evidence may cross the resume-planning boundary.
-- Generated DOCX drafts preserve the original package/contact header, replace only the summary, reorder existing skills/work bullets, and may add one verified `Additional Skills` line containing the confirmed exact JD keywords. The baseline is never modified.
-- Generated drafts can be downloaded or optionally uploaded to `Job Hunt/YYYY-MM-DD/Resumes` and always require user review; the app never submits applications.
-- Python verification: 126 tests pass. Full Ruff checks and the React TypeScript production build pass; the existing Word open/export, two-page visual render, and DOCX structural checks remain covered by the test suite.
+- Every Luna response records token/cache/reasoning and web-search usage without prompts or private documents. The manual panel shows pre-run ranges, per-action calculated cost, cache hits at zero new cost, and daily/monthly totals; the private ledger is mirrored to `Job Hunt/Source/ai_usage.json` when Drive is connected.
+- Official-posting identity and resume eligibility remain separate scores. Eligibility uses the active baseline when available and separates literal JD matches, cautious evidence-backed equivalents, and unsupported gaps.
+- The private immutable baseline and references are stored in the app-owned Drive Resume Library. For an unsupported exact JD skill, the UI accepts a factual note and explicit confirmation; only confirmed, contact-free evidence may cross the resume-planning boundary.
+- Generated DOCX drafts preserve the original package/contact header, naturally reframe only validated summary/work-bullet evidence, and place supported exact JD wording under the relevant Technical Skills sub-heading. Every metric and underlying fact is preserved, unsupported terms stay excluded, and the baseline is never modified.
+- Generated drafts can be downloaded or uploaded to `Job Hunt/Resumes/<Company>/<YYYY-MM-DD>_<Role>/` and always require user review; the app never submits applications.
+- Python verification, full Ruff checks, and the React TypeScript production build pass; package-boundary, Drive-registry synchronization, transient-search, application-queue, runtime-path, Word open/export, visual render, and DOCX structural checks remain covered by the test suite.
 - Live bounded adapter checks passed for all four enabled public ATS providers on 2026-08-02.
 - Streamlit is retired from the runtime and dependency list. Its final implementation remains only in [legacy/streamlit_app.py](legacy/streamlit_app.py) as a rollback/reference artifact.
 
@@ -72,12 +77,14 @@ See [Google access setup](docs/setup/GOOGLE_ACCESS.md) for PowerShell and Comman
 
 ```powershell
 cd D:\Projects\job_hunt
-.\.venv\Scripts\python.exe -m uvicorn backend.main:app --host 127.0.0.1 --port 8000
+.\.venv\Scripts\python.exe -m uvicorn job_hunt.api.main:app --host 127.0.0.1 --port 8000
 ```
 
-Open `http://localhost:8000`, configure the checked sources in **Run Setup**, and start a focused manual run. Completed source results open in **Job Queue**; a failure in one checked source does not discard the others. Expand a job unit to inspect every preserved source record, verify possible duplicate groups, compare the Gmail alert URL with the official employer URL, edit status/notes, and save changes to their original Excel/Drive workbooks. Gmail records show offline referral suggestions when a cautious same-company match exists. Network Reviews needs no Google connection: filter the offline profiles, verify a saved profile, and copy the personalized resume-review request.
+Open `http://localhost:8000`, configure checked sources in **Search**, and start a focused search. After editing the registry workbook in `Job Hunt/Source`, select **Refresh registry**; the site downloads and validates the changed Drive file before replacing its cache. Completed source results open in **Results & Applications**; a failure in one checked source does not discard the others. Expand a job unit to inspect source evidence, verify possible duplicates, compare alert and official URLs, then use **Save for later**, change status, or save a note when the job should persist. Only that explicit action updates the canonical Drive application queue. Gmail records show offline referral suggestions when a cautious same-company match exists.
 
-Use **Official JD + resume** only for a job you want to inspect. The first button reuses a cached result, resolves an exact supported public ATS record, or performs one exact-only Luna web-research call; it does not automatically generate a resume. Review the official candidate and separate eligibility score. For a listed missing skill you truly used, add a factual note and tick the accuracy confirmation; otherwise leave it unconfirmed and it will remain excluded. Generate only the selected DOCX, PDF, and/or cover-letter outputs when wanted. Confirmed notes are saved to the private Drive Resume Library for later reuse, and the baseline remains immutable. See [OpenAI access setup](docs/setup/OPENAI_ACCESS.md).
+Use **Official JD + resume** only for a job you want to inspect. The first button reuses a cached result, resolves an exact supported public ATS record, or performs one exact-only Luna web-research call; it does not automatically generate a resume. Review the official candidate and separate eligibility score. Exact wording already present, equivalent documented evidence, and still-unsupported gaps are shown separately. For a listed unsupported skill you truly used, add a factual note and tick the accuracy confirmation; otherwise leave it unconfirmed and it will remain excluded. Generate only the selected DOCX, PDF, and/or cover-letter outputs when wanted. The tailored copy places supported terms in relevant skill categories and may conservatively reframe directly supported sentences while preserving facts and metrics. Confirmed notes are saved to the private Drive Resume Library for later reuse, and the baseline remains immutable. See [OpenAI access setup](docs/setup/OPENAI_ACCESS.md).
+
+The same panel shows the initial or rolling pre-run cost range and the calculated cost after each call. Costs use the versioned price snapshot shown in the UI and are not a replacement for the OpenAI billing dashboard. Application totals begin with the first call made after usage metering was enabled; earlier calls are not reconstructed.
 
 Normal Gmail, Company Portal, ATS, and Network runs do not invoke an LLM. Luna runs only behind the explicit per-job buttons; it never receives Gmail bodies/identifiers, alert URLs, resume contact details, or connection/contact data. The app does not log into employer sites, execute careers-page JavaScript, bypass access controls, modify Gmail, or submit applications. Company and ATS runs stop safely on authorization blocks and retain an auditable fallback in `Source Checks`.
 
@@ -88,7 +95,7 @@ FastAPI serves the last compiled frontend. While changing React code, run the tw
 ```powershell
 # Terminal 1
 cd D:\Projects\job_hunt
-.\.venv\Scripts\python.exe -m uvicorn backend.main:app --host 127.0.0.1 --port 8000 --reload
+.\.venv\Scripts\python.exe -m uvicorn job_hunt.api.main:app --host 127.0.0.1 --port 8000 --reload
 
 # Terminal 2
 cd D:\Projects\job_hunt\frontend
@@ -102,10 +109,10 @@ Open `http://127.0.0.1:5173`. Rebuild with `npm.cmd run build` before using the 
 ```powershell
 cd D:\Projects\job_hunt
 .\.venv\Scripts\python.exe -m unittest discover -s tests -t .
-.\.venv\Scripts\ruff.exe check backend\main.py src\job_hunt\job_intelligence.py src\job_hunt\openai_config.py src\job_hunt\resume_docx.py src\job_hunt\integrations\openai_research.py tests\test_api.py tests\test_job_intelligence.py tests\test_openai_config.py tests\test_resume_docx.py
+.\.venv\Scripts\ruff.exe check src tests scripts
 
 cd frontend
 npm.cmd run build
 ```
 
-Do not expose the current local server directly to the public internet. Private deployment still needs an approved access-control layer, HTTPS, persistent encrypted OAuth/state storage, and a stable `JOB_HUNT_SESSION_SECRET`.
+Do not expose the current local server directly to the public internet. Private deployment still needs an approved access-control layer, HTTPS, persistent encrypted OAuth/state storage, and a stable `JOB_HUNT_SESSION_SECRET`. Set `JOB_HUNT_RUNTIME_DIR` to the private persistent mount; `.secrets` is only the local default.

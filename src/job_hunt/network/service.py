@@ -8,8 +8,8 @@ import threading
 from pathlib import Path
 from typing import Any
 
-from job_hunt.enrichment import Connection, normalize_text
-from job_hunt.gmail_referrals import (
+from job_hunt.jobs.enrichment import Connection, normalize_text
+from job_hunt.network.referrals import (
     RegistryConnectionRecord,
     load_registry_connection_records,
 )

@@ -1,6 +1,9 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { api } from "./api";
 import type {
+  AIActionUsage,
+  AIUsageEstimate,
+  AIUsageReport,
   ConfirmedSkillEvidence,
   GeneratedArtifact,
   GeneratedArtifactKind,
@@ -26,6 +29,115 @@ const OUTPUT_LABELS: Record<GeneratedArtifactKind, string> = {
 
 function text(value: Scalar | undefined): string {
   return value === null || value === undefined ? "" : String(value);
+}
+
+function usd(value: number | null | undefined): string {
+  if (value === null || value === undefined || !Number.isFinite(value)) return "Unavailable";
+  if (value === 0) return "$0.0000";
+  return `$${value < 0.01 ? value.toFixed(4) : value.toFixed(3)}`;
+}
+
+function tokenCount(value: number | undefined): string {
+  return Math.max(0, value ?? 0).toLocaleString();
+}
+
+function estimateText(estimate: AIUsageEstimate | undefined): string {
+  if (!estimate) return "Estimate loading...";
+  return `${usd(estimate.low_usd)}-${usd(estimate.high_usd)}`;
+}
+
+function CostEstimate({
+  estimate,
+  area,
+}: {
+  estimate: AIUsageEstimate | undefined;
+  area: string;
+}) {
+  return (
+    <div className="ai-cost-estimate">
+      <div>
+        <small>Pre-run AI estimate</small>
+        <strong>{estimateText(estimate)}</strong>
+      </div>
+      <p>
+        {area}. A cache hit costs $0. Estimate source: {estimate?.source === "recent_average"
+          ? `${estimate.sample_size} recent call${estimate.sample_size === 1 ? "" : "s"}`
+          : "initial conservative range"}.
+      </p>
+    </div>
+  );
+}
+
+function ActionCost({ usage }: { usage: AIActionUsage | undefined }) {
+  if (!usage) return null;
+  if (usage.cache_reused && usage.expected_api_calls === 0) {
+    return (
+      <div className="ai-action-cost cached">
+        <strong>$0 new API cost</strong>
+        <span>No Luna call was needed; a cached or deterministic result was used.</span>
+      </div>
+    );
+  }
+  if (!usage.tracking_complete || usage.unpriced_calls > 0) {
+    return (
+      <div className="ai-action-cost warning">
+        <strong>Cost record incomplete</strong>
+        <span>The action completed, but one or more API usage records were unavailable.</span>
+      </div>
+    );
+  }
+  return (
+    <div className="ai-action-cost">
+      <strong>{usd(usage.calculated_cost_usd)} calculated</strong>
+      <span>
+        {usage.api_calls} call{usage.api_calls === 1 ? "" : "s"} / {tokenCount(usage.total_tokens)} tokens
+        {usage.web_search_calls ? ` / ${usage.web_search_calls} web search${usage.web_search_calls === 1 ? "" : "es"}` : ""}
+      </span>
+    </div>
+  );
+}
+
+function AIUsageCard({ report }: { report: AIUsageReport | null }) {
+  if (!report) return null;
+  return (
+    <section className="ai-usage-card">
+      <div className="section-heading-row">
+        <div>
+          <p className="eyebrow">Measured API usage</p>
+          <h3>AI cost control</h3>
+          <p>Luna is used only for official-JD intelligence and resume/cover-letter planning.</p>
+        </div>
+        <span className="safe-badge">Calculated / not invoice</span>
+      </div>
+      <div className="ai-usage-metrics">
+        <div><small>Today</small><strong>{usd(report.today.calculated_cost_usd)}</strong><span>{report.today.api_calls} calls</span></div>
+        <div><small>This month</small><strong>{usd(report.current_month.calculated_cost_usd)}</strong><span>{tokenCount(report.current_month.total_tokens)} tokens</span></div>
+        <div><small>All recorded</small><strong>{usd(report.all_time.calculated_cost_usd)}</strong><span>{report.all_time.api_calls} calls since tracking began</span></div>
+        <div><small>Cached input</small><strong>{tokenCount(report.current_month.cached_input_tokens)}</strong><span>tokens billed at cache rate</span></div>
+        <div><small>Web search</small><strong>{report.current_month.web_search_calls}</strong><span>{usd(report.current_month.web_search_calls * report.pricing.web_search_per_call_usd)} tool fees</span></div>
+      </div>
+      <details className="ai-usage-details">
+        <summary>Recent AI calls and pricing details</summary>
+        {report.recent_events.length ? (
+          <div className="ai-usage-events">
+            {report.recent_events.slice(0, 8).map((event) => (
+              <div key={event.event_id}>
+                <span><strong>{event.operation_label}</strong>{event.company ? ` / ${event.company}` : ""}</span>
+                <span>{tokenCount(event.total_tokens)} tokens{event.web_search_calls ? ` / ${event.web_search_calls} search` : ""}</span>
+                <strong>{usd(event.calculated_cost_usd)}</strong>
+              </div>
+            ))}
+          </div>
+        ) : <p>No measured AI calls yet.</p>}
+        <p>
+          Prices use snapshot {report.pricing.version}. The OpenAI billing dashboard remains
+          authoritative. Usage metadata is mirrored to {report.storage.drive_path}; prompts,
+          documents, email content, and credentials are excluded. Calls made before this
+          feature was enabled are not reconstructed.
+        </p>
+      </details>
+    </section>
+  );
 }
 
 function SkillList({
@@ -61,6 +173,9 @@ function CandidateCard({
   onEvidenceChange: (skill: string, value: EvidenceDraft) => void;
 }) {
   const missingSkills = candidate.eligibility.missing_skills ?? [];
+  const equivalentMatches = candidate.eligibility.equivalent_matched_skills ?? [];
+  const exactMatches = candidate.eligibility.exact_matched_skills
+    ?? candidate.eligibility.matched_skills.filter((skill) => !equivalentMatches.includes(skill));
   return (
     <article className={`official-candidate ${selected ? "selected" : ""}`}>
       <label className="candidate-choice">
@@ -115,19 +230,31 @@ function CandidateCard({
             </ul>
           </details>
         )}
-        <h4>Your documented matches</h4>
-        <SkillList values={candidate.eligibility.matched_skills} empty="No exact skill labels matched" />
-        <h4>Gaps to review honestly</h4>
+        <h4>Exact wording already in your resume</h4>
+        <SkillList values={exactMatches} empty="No exact JD wording is present yet" />
+        {equivalentMatches.length > 0 && (
+          <div className="equivalent-match-block">
+            <h4>Equivalent documented evidence</h4>
+            <SkillList values={equivalentMatches} empty="" />
+            <p>
+              The capability is already supported by similar resume wording. Generation can
+              add the employer&apos;s exact phrase naturally; it is not counted as an exact ATS
+              keyword until it appears in the tailored DOCX.
+            </p>
+          </div>
+        )}
+        <h4>Still unsupported after exact/equivalent comparison</h4>
         {candidate.eligibility.gaps.length ? (
           <ul>{candidate.eligibility.gaps.map((gap) => <li key={gap}>{gap}</li>)}</ul>
         ) : <p className="muted">No explicit gap was found from the available requirements.</p>}
         {missingSkills.length > 0 && (
           <section className="gap-evidence-section">
             <div>
-              <h4>Add evidence for skills you actually used</h4>
+              <h4>Add evidence only for skills you actually used</h4>
               <p>
-                Explain what you did. A confirmed keyword is added to the tailored
-                resume&apos;s Technical Skills section; unconfirmed gaps stay excluded.
+                The active baseline is checked first for equivalent wording. For a remaining
+                gap, explain what you did; a confirmed keyword is placed under the most
+                relevant Technical Skills heading. Unconfirmed gaps stay excluded.
               </p>
             </div>
             <div className="gap-evidence-grid">
@@ -206,6 +333,75 @@ function ArtifactCard({ artifact }: { artifact: GeneratedArtifact }) {
   );
 }
 
+function AtsAlignmentCard({
+  comparison,
+}: {
+  comparison: GeneratedDocumentSet["ats_alignment"];
+}) {
+  const beforeScore = comparison.before.score;
+  const afterScore = comparison.after?.score ?? null;
+  const delta = comparison.delta;
+  const beforeMatches = new Set([
+    ...comparison.before.matched_required,
+    ...comparison.before.matched_preferred,
+  ].map(skillKey));
+  const newlyCovered = comparison.after
+    ? [
+      ...comparison.after.matched_required,
+      ...comparison.after.matched_preferred,
+    ].filter((value) => !beforeMatches.has(skillKey(value)))
+    : [];
+  const scoreLabel = (value: number | null) => value === null ? "N/A" : `${value}/100`;
+  const changeLabel = delta === null
+    ? "No tailored resume was generated"
+    : delta > 0
+      ? "New supported terms covered"
+      : delta < 0
+        ? "Review reduced keyword coverage"
+        : "Keyword coverage unchanged";
+
+  return (
+    <section className="ats-alignment-card" aria-labelledby="ats-alignment-heading">
+      <div className="ats-alignment-heading">
+        <div>
+          <h4 id="ats-alignment-heading">ATS keyword alignment estimate</h4>
+          <p>Verified JD terms measured against the selected baseline and generated copy.</p>
+        </div>
+        <span>Local / deterministic</span>
+      </div>
+      <div className="ats-score-grid">
+        <div>
+          <small>Before / baseline</small>
+          <strong>{scoreLabel(beforeScore)}</strong>
+          <span>{comparison.before.band}</span>
+        </div>
+        <div className="after">
+          <small>After / tailored copy</small>
+          <strong>{scoreLabel(afterScore)}</strong>
+          <span>{comparison.after?.band ?? "Generate a resume DOCX or PDF"}</span>
+        </div>
+        <div className={delta !== null && delta > 0 ? "improved" : ""}>
+          <small>Change</small>
+          <strong>{delta === null ? "N/A" : `${delta > 0 ? "+" : ""}${delta}`}</strong>
+          <span>{changeLabel}</span>
+        </div>
+      </div>
+      {newlyCovered.length > 0 && (
+        <div className="newly-covered-terms">
+          <strong>Newly covered in the tailored copy</strong>
+          <SkillList values={newlyCovered} empty="" />
+        </div>
+      )}
+      <details className="ats-methodology">
+        <summary>How this estimate is calculated</summary>
+        <p>{comparison.methodology}</p>
+        <p><strong>Before:</strong> {comparison.before.breakdown}</p>
+        {comparison.after && <p><strong>After:</strong> {comparison.after.breakdown}</p>}
+      </details>
+    </section>
+  );
+}
+
 export default function JobIntelligencePanel({
   job,
   googleConnected,
@@ -218,6 +414,7 @@ export default function JobIntelligencePanel({
   onOfficialUrl?: (url: string) => void;
 }) {
   const [status, setStatus] = useState<JobIntelligenceStatus | null>(null);
+  const [usageReport, setUsageReport] = useState<AIUsageReport | null>(null);
   const [analysis, setAnalysis] = useState<JobAnalysis | null>(null);
   const [selectedId, setSelectedId] = useState("");
   const [generation, setGeneration] = useState<GeneratedDocumentSet | null>(null);
@@ -234,6 +431,7 @@ export default function JobIntelligencePanel({
       .then((value) => {
         if (active) {
           setStatus(value);
+          setUsageReport(value.ai_usage ?? null);
           const saved = Object.fromEntries(
             (value.confirmed_skill_evidence ?? []).map((entry) => [
               skillKey(entry.skill),
@@ -257,6 +455,14 @@ export default function JobIntelligencePanel({
     [analysis, selectedId],
   );
   const driveReady = Boolean(googleConnected && status?.drive_connected);
+
+  const refreshUsage = async () => {
+    try {
+      setUsageReport(await api.aiUsage());
+    } catch {
+      // Per-action usage still remains visible in the action response.
+    }
+  };
 
   const updateEvidence = (skill: string, value: EvidenceDraft) => {
     setEvidenceDrafts((current) => ({
@@ -306,6 +512,7 @@ export default function JobIntelligencePanel({
           : response.analysis.warnings?.[0]
             ?? "No current public official posting could be verified. No documents were generated.",
       });
+      await refreshUsage();
     } catch (error) {
       setMessage({ kind: "error", text: (error as Error).message });
     } finally {
@@ -394,7 +601,12 @@ export default function JobIntelligencePanel({
         confirmedSkillEvidence: confirmedEvidence,
       });
       setGeneration(response.generation);
-      setMessage({ kind: "success", text: `${response.generation.artifacts.length} document(s) created in the dated Drive Resumes folder.` });
+      const folderPath = response.generation.artifacts[0]?.folder_path;
+      setMessage({
+        kind: "success",
+        text: `${response.generation.artifacts.length} document(s) created in ${folderPath || "the Drive application folder"}.`,
+      });
+      await refreshUsage();
     } catch (error) {
       setMessage({ kind: "error", text: (error as Error).message });
     } finally {
@@ -424,6 +636,8 @@ export default function JobIntelligencePanel({
             <span>{driveReady ? "Google Drive connected" : "Google Drive connection required"}</span>
             <span>No Gmail body, contacts, or connection data sent</span>
           </section>
+
+          <AIUsageCard report={usageReport} />
 
           <section className="manual-action-card library-card">
             <div className="section-heading-row">
@@ -493,12 +707,17 @@ export default function JobIntelligencePanel({
               <h3>1. Find the official posting and score eligibility</h3>
               <p>This checks the private cache first. A new or refreshed supported ATS job uses its exact public JD; other jobs use exact-only Luna web research when an official URL is already known.</p>
             </div>
+            <CostEstimate
+              estimate={usageReport?.estimates.official_job}
+              area="Exact ATS extraction uses tokens only; broader official-job research may also use paid web search"
+            />
             <div className="action-row">
               <button className="primary-button" type="button" disabled={Boolean(busy) || !status?.openai_configured} onClick={() => runAnalysis(false)}>
                 {busy === "analysis" ? "Analyzing..." : analysis ? "Load / reuse analysis" : "Find official JD + score"}
               </button>
               {analysis && <button className="secondary-button" type="button" disabled={Boolean(busy)} onClick={() => runAnalysis(true)}>Refresh with Luna</button>}
             </div>
+            {analysis && <ActionCost usage={analysis.ai_usage} />}
           </section>
 
           {analysis && (
@@ -506,7 +725,10 @@ export default function JobIntelligencePanel({
               <div className="section-heading-row">
                 <div>
                   <h3>Official candidates</h3>
-                  <p>Identity score and resume eligibility are intentionally separate.</p>
+                  <p>
+                    Identity and eligibility remain separate. Eligibility uses the active
+                    baseline resume when available and recognizes cautious equivalent wording.
+                  </p>
                 </div>
                 <span className="safe-badge">{analysis.cached ? "Cache reused / no new research call" : `Researched ${analysis.verified_at}`}</span>
               </div>
@@ -526,7 +748,7 @@ export default function JobIntelligencePanel({
           <section className="manual-action-card resume-action-card">
             <div>
               <h3>2. Choose and generate application documents</h3>
-              <p>The model may position documented or explicitly user-confirmed evidence. It cannot alter the baseline, invent achievements, or submit an application.</p>
+              <p>The model may naturally reframe supported summary and experience wording, while exact JD terms are placed in relevant skill categories. It cannot alter the baseline, invent achievements, change metrics, or submit an application.</p>
             </div>
             <div className="output-options" role="group" aria-label="Generated document formats">
               {(Object.keys(OUTPUT_LABELS) as GeneratedArtifactKind[]).map((kind) => (
@@ -549,7 +771,13 @@ export default function JobIntelligencePanel({
                   : "No gap keywords will be added unless you provide evidence and confirm it."}
               </span>
             </div>
-            <p className="drive-destination">Selected files are uploaded to <strong>Job Hunt / YYYY-MM-DD / Resumes</strong>.</p>
+            <p className="drive-destination">
+              Selected files use neutral names and are uploaded to <strong>Job Hunt / Resumes / Company / YYYY-MM-DD_Role</strong>.
+            </p>
+            <CostEstimate
+              estimate={usageReport?.estimates.resume_plan}
+              area="One Luna plan covers the selected resume formats and optional cover letter; DOCX/PDF creation is local"
+            />
             <button
               className="primary-button"
               type="button"
@@ -566,14 +794,25 @@ export default function JobIntelligencePanel({
                 <div>
                   <h3>Application documents ready</h3>
                   <p>{generation.artifacts.length} verified file(s) / generated {generation.generated_at}</p>
+                  {generation.artifacts[0]?.folder_path && <p>{generation.artifacts[0].folder_path}</p>}
                 </div>
                 {generation.artifacts[0]?.folder_url && <a className="secondary-button" href={generation.artifacts[0].folder_url} target="_blank" rel="noreferrer">Open Drive folder</a>}
               </div>
+              <ActionCost usage={generation.ai_usage} />
               <div className="artifact-grid">
                 {generation.artifacts.map((artifact) => <ArtifactCard artifact={artifact} key={artifact.artifact_id} />)}
               </div>
+              {generation.ats_alignment && <AtsAlignmentCard comparison={generation.ats_alignment} />}
               {generation.reference_points_used.length > 0 && <><h4>Reference evidence used</h4><ul>{generation.reference_points_used.map((point) => <li key={point}>{point}</li>)}</ul></>}
+              {(generation.documented_equivalent_skills_added ?? []).length > 0 && <><h4>Equivalent evidence translated to exact JD wording</h4><SkillList values={generation.documented_equivalent_skills_added} empty="" /></>}
               {generation.confirmed_skills_added.length > 0 && <><h4>User-confirmed skills added</h4><SkillList values={generation.confirmed_skills_added} empty="" /></>}
+              {(generation.skill_placements ?? []).length > 0 && (
+                <details className="skill-placement-details">
+                  <summary>Where JD keywords were placed</summary>
+                  <ul>{generation.skill_placements.map((item) => <li key={item.skill}><strong>{item.skill}</strong> / {item.category}</li>)}</ul>
+                </details>
+              )}
+              {(generation.experience_bullets_reframed ?? 0) > 0 && <p className="source-evidence-note">{generation.experience_bullets_reframed} existing experience bullet(s) were naturally reframed after validation; facts and metrics were preserved.</p>}
               {generation.keyword_alignment.length > 0 && <><h4>Supported keywords emphasized</h4><SkillList values={generation.keyword_alignment} empty="" /></>}
               {generation.change_notes.length > 0 && <><h4>What changed</h4><ul>{generation.change_notes.map((note) => <li key={note}>{note}</li>)}</ul></>}
               {generation.warnings.map((warning) => <p className="resume-warning" key={warning}>{warning}</p>)}

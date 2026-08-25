@@ -1,6 +1,8 @@
 import unittest
 
-from job_hunt.gmail_run_state import (
+from job_hunt.gmail.state import (
+    append_gmail_run_history,
+    normalize_gmail_run_state,
     select_new_or_changed_gmail_jobs,
     update_gmail_run_state,
 )
@@ -41,6 +43,40 @@ class GmailRunStateTests(unittest.TestCase):
         )
         self.assertEqual(len(selected), 1)
         self.assertEqual(unchanged, 0)
+
+    def test_run_history_is_sanitized_preserved_and_deduplicated(self):
+        state = append_gmail_run_history(
+            None,
+            {
+                "run_id": "run_one",
+                "run_started_at": "2026-08-17T11:23:58+05:30",
+                "file_name": "gmail_alerts_2026-08-17_112358.xlsx",
+                "drive_file_id": "drive-one",
+                "drive_url": "https://drive.example/one",
+                "rows_exported": 269,
+                "messages_read": 64,
+                "unique_jobs": 319,
+                "unchanged_jobs": 48,
+                "status": "completed",
+                "private_value": "must-not-persist",
+            },
+        )
+        state = update_gmail_run_state(state, [_job("1")], completed_at="later")
+        state = append_gmail_run_history(
+            state,
+            {
+                "run_id": "run_one",
+                "run_started_at": "2026-08-17T11:23:58+05:30",
+                "file_name": "gmail_alerts_2026-08-17_112358.xlsx",
+                "rows_exported": "270",
+            },
+        )
+
+        normalized = normalize_gmail_run_state(state)
+        self.assertEqual(len(normalized["run_history"]), 1)
+        self.assertEqual(normalized["run_history"][0]["rows_exported"], 270)
+        self.assertNotIn("private_value", normalized["run_history"][0])
+        self.assertIn("1", normalized["job_fingerprints"])
 
 
 if __name__ == "__main__":

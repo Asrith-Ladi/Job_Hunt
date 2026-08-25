@@ -1,4 +1,4 @@
-"""Canonical models kept independent of Gmail, Streamlit, and Google Sheets."""
+"""Canonical job models kept independent of delivery and storage frameworks."""
 
 from dataclasses import asdict, dataclass, field
 from typing import List, Optional

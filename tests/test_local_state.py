@@ -2,7 +2,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from job_hunt.local_state import load_local_state, save_local_state
+from job_hunt.runtime.state import load_local_state, save_local_state
 
 
 class LocalStateTests(unittest.TestCase):

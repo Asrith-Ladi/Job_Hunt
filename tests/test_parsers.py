@@ -1,6 +1,6 @@
 import unittest
 
-from job_hunt.models import AlertMessage
+from job_hunt.jobs.models import AlertMessage
 from job_hunt.parsers.linkedin import LinkedInAlertParser
 from job_hunt.parsers.naukri import NaukriAlertParser
 from job_hunt.parsers import select_parser

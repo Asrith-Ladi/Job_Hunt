@@ -2,13 +2,14 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from job_hunt.job_intelligence import normalize_resume_plan
-from job_hunt.resume_docx import (
+from job_hunt.intelligence.service import normalize_resume_plan
+from job_hunt.resumes.docx import (
     ResumeTemplateError,
     extract_resume_evidence,
     tailor_resume_docx,
     validate_resume_docx,
 )
+from job_hunt.jobs.skills import map_job_skills_to_evidence, resume_evidence_items
 from tests.docx_fixture import create_resume_docx
 
 
@@ -56,7 +57,7 @@ class ResumeDocxTests(unittest.TestCase):
             with self.assertRaises(ResumeTemplateError):
                 extract_resume_evidence(base)
 
-    def test_tailoring_adds_only_user_confirmed_keywords_to_a_new_skills_line(self):
+    def test_tailoring_places_user_confirmed_keywords_in_relevant_skill_heading(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             base = create_resume_docx(root / "base.docx")
@@ -77,13 +78,89 @@ class ResumeDocxTests(unittest.TestCase):
             output = tailor_resume_docx(base, root / "tailored.docx", plan)
             tailored = extract_resume_evidence(output)
 
-            self.assertEqual(
-                tailored["skills"][-1]["text"],
-                "Additional Skills: Context engineering, Evaluation pipelines",
+            ai_line = next(
+                item["text"] for item in tailored["skills"] if item["text"].startswith("AI:")
             )
-            self.assertEqual(
-                sorted(item["text"] for item in tailored["skills"][:-1]),
-                sorted(item["text"] for item in evidence["skills"]),
+            self.assertIn("Context engineering", ai_line)
+            self.assertIn("Evaluation pipelines", ai_line)
+            self.assertFalse(
+                any(item["text"].startswith("Additional Skills:") for item in tailored["skills"])
+            )
+
+    def test_equivalent_evidence_adds_exact_keyword_and_reframes_relevant_bullet(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            base = create_resume_docx(root / "base.docx")
+            evidence = extract_resume_evidence(base)
+            posting = {"required_skills": ["Evaluations"], "preferred_skills": []}
+            mappings = map_job_skills_to_evidence(
+                posting["required_skills"],
+                resume_evidence_items(evidence),
+            )
+            evidence["supported_jd_keyword_evidence"] = mappings
+            evidence["baseline_missing_jd_keywords"] = ["Evaluations"]
+            validation_bullet = next(
+                item
+                for section in evidence["experience_sections"]
+                for item in section["bullets"]
+                if "model validation" in item["text"]
+            )
+            raw_sections = []
+            for section in evidence["experience_sections"]:
+                rewrites = []
+                if validation_bullet in section["bullets"]:
+                    rewrites.append(
+                        {
+                            "bullet_id": validation_bullet["id"],
+                            "text": (
+                                "Improved model Evaluations through automated validation, "
+                                "reducing manual testing effort by 80%."
+                            ),
+                        }
+                    )
+                raw_sections.append(
+                    {
+                        "section_id": section["section_id"],
+                        "bullet_order": [item["id"] for item in section["bullets"]],
+                        "bullet_rewrites": rewrites,
+                    }
+                )
+            plan = normalize_resume_plan(
+                {
+                    "summary": evidence["current_summary"],
+                    "skill_order": [item["id"] for item in evidence["skills"]],
+                    "experience_sections": raw_sections,
+                    "reference_evidence_ids": [],
+                    "cover_letter_paragraphs": [],
+                    "keyword_alignment": ["Evaluations"],
+                    "change_notes": [],
+                },
+                posting,
+                evidence,
+            )
+
+            output = tailor_resume_docx(base, root / "tailored.docx", plan)
+            tailored = extract_resume_evidence(output)
+
+            self.assertEqual(plan["documented_equivalent_skills_added"], ["Evaluations"])
+            self.assertEqual(plan["experience_sections"][0]["bullet_rewrites"], [
+                {
+                    "bullet_id": validation_bullet["id"],
+                    "text": (
+                        "Improved model Evaluations through automated validation, "
+                        "reducing manual testing effort by 80%."
+                    ),
+                }
+            ])
+            self.assertTrue(
+                any("Evaluations" in item["text"] for item in tailored["skills"])
+            )
+            self.assertTrue(
+                any(
+                    "Improved model Evaluations" in item["text"]
+                    for section in tailored["experience_sections"]
+                    for item in section["bullets"]
+                )
             )
 
     def test_unsupported_skill_in_generated_summary_keeps_original(self):
@@ -111,6 +188,59 @@ class ResumeDocxTests(unittest.TestCase):
             self.assertEqual(plan["summary"], evidence["current_summary"])
             self.assertNotIn("Azure", plan["keyword_alignment"])
             self.assertTrue(plan["validation_warnings"])
+
+    def test_bullet_rewrite_rejects_changed_metrics_and_unrelated_keyword_evidence(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            base = create_resume_docx(Path(temporary) / "base.docx")
+            evidence = extract_resume_evidence(base)
+            validation_bullet = next(
+                item
+                for section in evidence["experience_sections"]
+                for item in section["bullets"]
+                if "model validation" in item["text"]
+            )
+            evidence["supported_jd_keyword_evidence"] = [
+                {
+                    "skill": "Context engineering",
+                    "matched": True,
+                    "match_type": "equivalent",
+                    "evidence_ids": ["resume_summary"],
+                    "evidence_kinds": ["summary"],
+                }
+            ]
+            section = evidence["experience_sections"][0]
+            raw = {
+                "summary": evidence["current_summary"],
+                "skill_order": [],
+                "experience_sections": [
+                    {
+                        "section_id": section["section_id"],
+                        "bullet_order": [item["id"] for item in section["bullets"]],
+                        "bullet_rewrites": [
+                            {
+                                "bullet_id": validation_bullet["id"],
+                                "text": (
+                                    "Applied Context engineering to automated model validation, "
+                                    "reducing manual testing effort by 90%."
+                                ),
+                            }
+                        ],
+                    }
+                ],
+                "keyword_alignment": [],
+                "change_notes": [],
+            }
+
+            plan = normalize_resume_plan(
+                raw,
+                {"required_skills": ["Context engineering"]},
+                evidence,
+            )
+
+            self.assertEqual(plan["experience_sections"][0]["bullet_rewrites"], [])
+            self.assertTrue(
+                any("rewritten bullet" in warning for warning in plan["validation_warnings"])
+            )
 
 
 if __name__ == "__main__":

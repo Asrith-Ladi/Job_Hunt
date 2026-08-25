@@ -6,7 +6,7 @@ from pathlib import Path
 from openpyxl import Workbook, load_workbook
 from openpyxl.utils import get_column_letter
 
-from job_hunt.gmail_workbook import (
+from job_hunt.gmail.workbook import (
     GMAIL_SHEET_NAME,
     GMAIL_RUN_COLUMNS,
     GMAIL_TABLE_NAME,

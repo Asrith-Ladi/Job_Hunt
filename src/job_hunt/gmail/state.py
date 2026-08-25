@@ -7,7 +7,21 @@ import json
 from typing import Any, Iterable, Mapping
 
 
-STATE_VERSION = 1
+STATE_VERSION = 2
+MAX_RUN_HISTORY = 200
+RUN_HISTORY_FIELDS = (
+    "run_id",
+    "run_started_at",
+    "file_name",
+    "date_folder_id",
+    "drive_file_id",
+    "drive_url",
+    "rows_exported",
+    "messages_read",
+    "unique_jobs",
+    "unchanged_jobs",
+    "status",
+)
 FINGERPRINT_FIELDS = (
     "alert_source",
     "company",
@@ -20,11 +34,19 @@ FINGERPRINT_FIELDS = (
 )
 
 
+def _safe_int(value: object) -> int:
+    try:
+        return max(0, int(value or 0))
+    except (TypeError, ValueError):
+        return 0
+
+
 def empty_gmail_run_state() -> dict[str, Any]:
     return {
         "version": STATE_VERSION,
         "last_successful_run_at": "",
         "job_fingerprints": {},
+        "run_history": [],
     }
 
 
@@ -34,6 +56,30 @@ def normalize_gmail_run_state(value: Any) -> dict[str, Any]:
     fingerprints = value.get("job_fingerprints")
     if not isinstance(fingerprints, Mapping):
         fingerprints = {}
+    history = value.get("run_history")
+    if not isinstance(history, list):
+        history = []
+    normalized_history: list[dict[str, Any]] = []
+    seen_run_ids: set[str] = set()
+    for raw in reversed(history):
+        if not isinstance(raw, Mapping):
+            continue
+        run_id = str(raw.get("run_id") or "").strip()
+        if not run_id or run_id in seen_run_ids:
+            continue
+        seen_run_ids.add(run_id)
+        normalized_history.append(
+            {
+                field: (
+                    _safe_int(raw.get(field))
+                    if field
+                    in {"rows_exported", "messages_read", "unique_jobs", "unchanged_jobs"}
+                    else str(raw.get(field) or "").strip()
+                )
+                for field in RUN_HISTORY_FIELDS
+            }
+        )
+    normalized_history.reverse()
     return {
         "version": STATE_VERSION,
         "last_successful_run_at": str(value.get("last_successful_run_at") or ""),
@@ -42,7 +88,46 @@ def normalize_gmail_run_state(value: Any) -> dict[str, Any]:
             for key, fingerprint in fingerprints.items()
             if key and fingerprint
         },
+        "run_history": normalized_history[-MAX_RUN_HISTORY:],
     }
+
+
+def append_gmail_run_history(
+    state: Mapping[str, Any] | None,
+    record: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Append one sanitized durable run reference without duplicating its ID."""
+
+    updated = normalize_gmail_run_state(state)
+    run_id = str(record.get("run_id") or "").strip()
+    if not run_id:
+        raise ValueError("A Gmail run-history record requires a run ID.")
+    existing = next(
+        (
+            dict(item)
+            for item in updated["run_history"]
+            if str(item.get("run_id") or "") == run_id
+        ),
+        {},
+    )
+    merged = {**existing, **dict(record), "run_id": run_id}
+    history = [
+        dict(item)
+        for item in updated["run_history"]
+        if str(item.get("run_id") or "") != run_id
+    ]
+    history.append(
+        {
+            field: (
+                _safe_int(merged.get(field))
+                if field in {"rows_exported", "messages_read", "unique_jobs", "unchanged_jobs"}
+                else str(merged.get(field) or "").strip()
+            )
+            for field in RUN_HISTORY_FIELDS
+        }
+    )
+    updated["run_history"] = history[-MAX_RUN_HISTORY:]
+    return updated
 
 
 def gmail_job_fingerprint(row: Mapping[str, Any]) -> str:

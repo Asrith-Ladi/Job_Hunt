@@ -3,15 +3,29 @@
 from __future__ import annotations
 
 import hashlib
+import shutil
+import threading
 from dataclasses import asdict, dataclass
+from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from openpyxl import load_workbook
 from openpyxl.utils.cell import range_boundaries
 
 from job_hunt.discovery.detection import DetectionResult, detect_source
 from job_hunt.discovery.models import SourceConfig, clean_text
+from job_hunt.integrations.drive_storage import (
+    EXCEL_MIME_TYPE,
+    build_drive_service,
+    download_drive_file,
+    drive_file_url,
+    ensure_job_hunt_folders,
+    find_child_file,
+    upload_or_update_file,
+)
+from job_hunt.runtime.paths import AppPaths, REGISTRY_FILE_NAME
+from job_hunt.runtime.state import load_local_state, save_local_state
 
 
 CATEGORY_SHEETS = (
@@ -145,5 +159,179 @@ def load_company_registry(path: Path) -> list[CompanyRegistryEntry]:
                 )
             )
     if len(entries) != 210:
+        workbook.close()
         raise ValueError(f"Expected 210 unique registry companies, found {len(entries)}.")
+    workbook.close()
     return entries
+
+
+@dataclass(frozen=True)
+class RegistrySnapshot:
+    entries: list[CompanyRegistryEntry]
+    sync_status: str
+    source: str
+    warning: str = ""
+    drive_url: str = ""
+    drive_modified_time: str = ""
+    synced_at: str = ""
+
+    def metadata(self) -> dict[str, Any]:
+        return {
+            "sync_status": self.sync_status,
+            "source": self.source,
+            "warning": self.warning,
+            "drive_url": self.drive_url,
+            "drive_modified_time": self.drive_modified_time,
+            "synced_at": self.synced_at,
+        }
+
+
+class CompanyRegistryRepository:
+    """Load the Drive-authoritative registry through a validated local cache."""
+
+    def __init__(
+        self,
+        paths: AppPaths,
+        google_connection,
+        *,
+        registry_loader: Callable[[Path], list[CompanyRegistryEntry]] = load_company_registry,
+        drive_service_factory: Callable[[Any], Any] = build_drive_service,
+    ) -> None:
+        self.paths = paths
+        self.google_connection = google_connection
+        self.registry_loader = registry_loader
+        self.drive_service_factory = drive_service_factory
+        self._lock = threading.Lock()
+
+    @staticmethod
+    def _digest(path: Path) -> str:
+        digest = hashlib.md5(usedforsecurity=False)
+        with Path(path).open("rb") as source:
+            for chunk in iter(lambda: source.read(1024 * 1024), b""):
+                digest.update(chunk)
+        return digest.hexdigest()
+
+    def _ensure_local_cache(self) -> None:
+        cache_path = self.paths.registry_path
+        if cache_path.is_file():
+            return
+        seed_path = self.paths.registry_seed_path
+        if not seed_path.is_file():
+            return
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
+        candidate = cache_path.with_name(f".{cache_path.stem}.seed{cache_path.suffix}")
+        shutil.copyfile(seed_path, candidate)
+        try:
+            self.registry_loader(candidate)
+            candidate.replace(cache_path)
+        finally:
+            candidate.unlink(missing_ok=True)
+
+    def _fallback(self, warning: str) -> RegistrySnapshot:
+        self._ensure_local_cache()
+        entries = self.registry_loader(self.paths.registry_path)
+        return RegistrySnapshot(
+            entries=entries,
+            sync_status="local_fallback",
+            source="local_cache",
+            warning=warning,
+            synced_at=datetime.now(timezone.utc).replace(microsecond=0).isoformat(),
+        )
+
+    def load(self) -> RegistrySnapshot:
+        with self._lock:
+            return self._load_locked()
+
+    def _load_locked(self) -> RegistrySnapshot:
+        self._ensure_local_cache()
+        try:
+            credentials = self.google_connection.require_credentials()
+        except (AttributeError, RuntimeError):
+            return self._fallback(
+                "Google Drive is unavailable; showing the last validated registry cache."
+            )
+
+        try:
+            drive_service = self.drive_service_factory(credentials)
+            folders = ensure_job_hunt_folders(drive_service)
+            source_folder_id = str(folders["source"]["id"])
+            remote = find_child_file(
+                drive_service,
+                REGISTRY_FILE_NAME,
+                parent_id=source_folder_id,
+                mime_type=EXCEL_MIME_TYPE,
+            )
+        except Exception:
+            return self._fallback(
+                "Drive registry refresh failed; showing the last validated registry cache."
+            )
+
+        state = load_local_state(self.paths.app_state_path)
+        source_ids = dict(state.get("drive_source_file_ids") or {})
+        revisions = dict(state.get("drive_source_revisions") or {})
+        synced_at = datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+
+        if remote is None:
+            if not self.paths.registry_path.is_file():
+                raise FileNotFoundError(
+                    "The Drive registry and its local bootstrap seed are unavailable."
+                )
+            entries = self.registry_loader(self.paths.registry_path)
+            created = upload_or_update_file(
+                drive_service,
+                self.paths.registry_path,
+                parent_id=source_folder_id,
+            )
+            remote = created
+            status = "drive_seeded"
+        else:
+            remote_id = str(remote.get("id") or "")
+            remote_md5 = str(remote.get("md5Checksum") or "")
+            remote_revision = {
+                "file_id": remote_id,
+                "modified_time": str(remote.get("modifiedTime") or ""),
+                "md5_checksum": remote_md5,
+            }
+            stored_revision = revisions.get(REGISTRY_FILE_NAME)
+            local_matches = self.paths.registry_path.is_file() and (
+                (remote_md5 and self._digest(self.paths.registry_path) == remote_md5)
+                or (not remote_md5 and stored_revision == remote_revision)
+            )
+            if local_matches:
+                entries = self.registry_loader(self.paths.registry_path)
+                status = "drive_current"
+            else:
+                candidate = self.paths.registry_path.with_name(
+                    f".{self.paths.registry_path.stem}.drive{self.paths.registry_path.suffix}"
+                )
+                try:
+                    download_drive_file(drive_service, remote_id, candidate)
+                    entries = self.registry_loader(candidate)
+                    self.paths.registry_path.parent.mkdir(parents=True, exist_ok=True)
+                    candidate.replace(self.paths.registry_path)
+                    status = "drive_refreshed"
+                except Exception:
+                    candidate.unlink(missing_ok=True)
+                    return self._fallback(
+                        "The Drive registry failed download or validation; showing the last "
+                        "validated registry cache."
+                    )
+
+        remote_id = str(remote.get("id") or "")
+        source_ids[REGISTRY_FILE_NAME] = remote_id
+        revisions[REGISTRY_FILE_NAME] = {
+            "file_id": remote_id,
+            "modified_time": str(remote.get("modifiedTime") or ""),
+            "md5_checksum": str(remote.get("md5Checksum") or ""),
+        }
+        state["drive_source_file_ids"] = source_ids
+        state["drive_source_revisions"] = revisions
+        save_local_state(self.paths.app_state_path, state)
+        return RegistrySnapshot(
+            entries=entries,
+            sync_status=status,
+            source="google_drive",
+            drive_url=str(remote.get("webViewLink") or drive_file_url(remote_id)),
+            drive_modified_time=str(remote.get("modifiedTime") or ""),
+            synced_at=synced_at,
+        )

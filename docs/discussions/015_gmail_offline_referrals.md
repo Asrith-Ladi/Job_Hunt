@@ -13,7 +13,8 @@ This enhancement is deterministic and offline:
 - never read, return, log, or export connection email/phone values;
 - match only cautious canonical-company equivalents;
 - rank recruiting contacts first, technical contacts second, and other same-company contacts afterward;
-- expose one top candidate plus the total available same-company candidate count;
+- expose every ranked same-company candidate in React while retaining the top candidate and
+  total count in the flat Excel-compatible row;
 - mark every candidate as `offline_company_match_unverified` because the snapshot cannot prove current employment or willingness to refer;
 - keep Gmail ingestion working with blank referral fields if the registry is missing or invalid.
 
@@ -48,8 +49,10 @@ The generated LinkedIn request:
 
 ## React and Excel behavior
 
-- Suggested referral names open the saved LinkedIn profile.
-- The referral message preserves paragraph breaks, makes the visible job URL clickable, and has a `Copy message` button.
+- Every ranked same-company referral name opens the saved LinkedIn profile, with the best-ranked
+  match first and all alternatives available in the expanded job record.
+- Each candidate has a separately personalized copy action. Messages preserve paragraph breaks
+  and include the visible job URL.
 - Search includes referral name and position.
 - A `Referral leads` metric shows how many displayed jobs have a candidate.
 - Excel makes the referral name/profile clickable and links the message cell to the job URL.
@@ -67,3 +70,14 @@ The generated LinkedIn request:
 ## Status
 
 Implementation is complete. On the next app load, the latest local Gmail workbook is enriched on screen without rereading Gmail. Use `Save Excel + Drive` only when ready to persist the new fields into that same workbook and its Drive copy.
+
+### 2026-08-17 extension
+
+The user explicitly requested all matching profiles rather than only the best-ranked profile so
+they can contact more than one person. The runtime API now returns a contact-free candidate list
+per Gmail job, and React renders a profile link and copy-ready request for every match. The seven
+flat workbook columns remain stable and retain the top-ranked match plus the total count.
+
+Verification for this extension: all 127 Python tests and full Ruff checks pass, and the React
+production build completes. No in-app browser was connected, so a visual click-through was not
+claimed.

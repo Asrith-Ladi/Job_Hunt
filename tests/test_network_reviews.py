@@ -4,13 +4,13 @@ from pathlib import Path
 
 from openpyxl import Workbook
 
-from job_hunt.network_reviews import (
+from job_hunt.network.service import (
     NetworkReviewService,
     connection_review_relevance,
     profile_review_message,
 )
-from job_hunt.enrichment import Connection
-from job_hunt.gmail_referrals import (
+from job_hunt.jobs.enrichment import Connection
+from job_hunt.network.referrals import (
     load_registry_connection_profiles,
     load_registry_connection_records,
 )

@@ -15,8 +15,8 @@ from math import ceil
 from typing import Any, Callable, Iterable, Mapping
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
-from job_hunt.enrichment import canonical_company, normalize_text
-from job_hunt.experience import extract_experience_range
+from job_hunt.jobs.enrichment import canonical_company, normalize_text
+from job_hunt.jobs.experience import extract_experience_range
 
 
 DEFAULT_OPENAI_MODEL = "gpt-5.6-luna"
@@ -489,6 +489,33 @@ class OfficialJobResearcher:
             OpenAI = _require_openai_client()
             client = OpenAI(api_key=str(api_key).strip())
         self.client = client
+        self._usage_recorder: Callable[..., dict[str, Any]] | None = None
+        self._usage_context: dict[str, Any] = {}
+
+    def configure_usage_recording(
+        self,
+        recorder: Callable[..., dict[str, Any]],
+        *,
+        context: Mapping[str, Any] | None = None,
+    ) -> None:
+        """Attach a metering callback without exposing prompts or model output."""
+
+        self._usage_recorder = recorder
+        self._usage_context = dict(context or {})
+
+    def _record_usage(self, response: object, operation: str) -> None:
+        if self._usage_recorder is None:
+            return
+        try:
+            self._usage_recorder(
+                response,
+                operation=operation,
+                model=self.model,
+                context=self._usage_context,
+            )
+        except Exception:
+            # Metering must never invalidate a paid research response.
+            return
 
     def _research_company_batch(self, alerts: list[dict], *, exact_only: bool = False) -> dict:
         company = str(alerts[0].get("company") or "unknown employer")
@@ -522,6 +549,7 @@ class OfficialJobResearcher:
                 },
                 store=False,
             )
+            self._record_usage(response, "official_job_research")
             output_text = str(getattr(response, "output_text", "") or "").strip()
             if not output_text:
                 raise ValueError("The model returned no structured output.")
@@ -571,6 +599,7 @@ class OfficialJobResearcher:
                 },
                 store=False,
             )
+            self._record_usage(response, "exact_jd_extraction")
             output_text = str(getattr(response, "output_text", "") or "").strip()
             if not output_text:
                 raise ValueError("The model returned no exact-job extraction.")

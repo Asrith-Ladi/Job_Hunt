@@ -1,6 +1,30 @@
 export type Scalar = string | number | boolean | null;
 export type JobRow = Record<string, Scalar>;
 
+export interface ReferralCandidate {
+  name: string;
+  position: string;
+  profile_url: string;
+  message: string;
+}
+
+export interface SavedApplication {
+  application_id: string;
+  source: "gmail" | "company_portals" | "ats_sources";
+  source_record_id: string;
+  saved_at: string;
+  updated_at: string;
+  row: JobRow;
+  referral_candidates: ReferralCandidate[];
+}
+
+export interface ApplicationsResponse {
+  applications: SavedApplication[];
+  count: number;
+  updated_at: string;
+  drive_url: string;
+}
+
 export interface GoogleStatus {
   connected: boolean;
   credentials_file_available: boolean;
@@ -62,6 +86,22 @@ export interface CompanyRegistryEntry {
   adapter_ready: boolean;
 }
 
+export interface RegistryStatus {
+  sync_status: "drive_current" | "drive_refreshed" | "drive_seeded" | "local_fallback";
+  source: "google_drive" | "local_cache";
+  warning: string;
+  drive_url: string;
+  drive_modified_time: string;
+  synced_at: string;
+}
+
+export interface RegistryResponse {
+  companies: CompanyRegistryEntry[];
+  count: number;
+  supported_ats_providers: string[];
+  registry_status: RegistryStatus;
+}
+
 export interface DiscoveryFiltersSettings {
   keyword: string;
   location: string;
@@ -102,12 +142,30 @@ export interface RunArtifact {
   run_started_at: string;
   file_name: string;
   drive_url: string;
+  historical?: boolean;
+  review_only?: boolean;
+  transient?: boolean;
   summary: Record<string, Scalar>;
   rows: JobRow[];
+  referral_candidates?: Record<string, ReferralCandidate[]>;
   job_columns: string[];
   editable_columns: string[];
   application_statuses: string[];
   experience_fit_statuses: string[];
+}
+
+export interface GmailRunHistoryEntry {
+  run_id: string;
+  run_started_at: string;
+  file_name: string;
+  drive_url: string;
+  rows_exported: number;
+  messages_read: number;
+  unique_jobs: number;
+  unchanged_jobs: number;
+  status: string;
+  is_current: boolean;
+  loadable: boolean;
 }
 
 export interface RunSettings {
@@ -188,6 +246,100 @@ export interface JobIntelligenceStatus {
   message: string;
   manual_only: boolean;
   contact_data_sent_to_openai: boolean;
+  ai_usage?: AIUsageReport;
+}
+
+export interface AIUsageTotals {
+  api_calls: number;
+  calculated_cost_usd: number;
+  unpriced_calls: number;
+  input_tokens: number;
+  cached_input_tokens: number;
+  output_tokens: number;
+  reasoning_tokens: number;
+  total_tokens: number;
+  web_search_calls: number;
+}
+
+export interface AIUsageEvent {
+  event_id: string;
+  recorded_at: string;
+  operation: string;
+  operation_label: string;
+  model: string;
+  job_record_id?: string;
+  official_job_id?: string;
+  company?: string;
+  title?: string;
+  input_tokens: number;
+  cached_input_tokens: number;
+  cache_write_tokens: number;
+  uncached_input_tokens: number;
+  output_tokens: number;
+  reasoning_tokens: number;
+  total_tokens: number;
+  web_search_calls: number;
+  token_cost_usd: number | null;
+  web_search_cost_usd: number;
+  calculated_cost_usd: number | null;
+  currency: "USD";
+  pricing_version: string;
+  pricing_supported: boolean;
+  long_context_pricing: boolean;
+  usage_available: boolean;
+}
+
+export interface AIUsageEstimate {
+  low_usd: number;
+  estimated_usd: number;
+  high_usd: number;
+  web_search_possible: boolean;
+  source: "initial_range" | "recent_average";
+  sample_size: number;
+  cache_cost_usd: number;
+}
+
+export interface AIActionUsage extends AIUsageTotals {
+  events: AIUsageEvent[];
+  cache_reused: boolean;
+  expected_api_calls: number;
+  tracking_complete: boolean;
+  calculated_not_invoice: boolean;
+}
+
+export interface AIUsageReport {
+  schema_version: number;
+  currency: "USD";
+  calculated_not_invoice: boolean;
+  tracking_started_at: string;
+  includes_calls_before_feature_enabled: boolean;
+  all_time: AIUsageTotals;
+  today: AIUsageTotals;
+  current_month: AIUsageTotals;
+  by_operation: Record<string, AIUsageTotals>;
+  estimates: {
+    official_job: AIUsageEstimate;
+    resume_plan: AIUsageEstimate;
+  };
+  recent_events: AIUsageEvent[];
+  pricing: {
+    version: string;
+    model: string;
+    input_per_million_usd: number;
+    cached_input_per_million_usd: number;
+    cache_write_per_million_usd: number;
+    output_per_million_usd: number;
+    web_search_per_call_usd: number;
+    source_url: string;
+    web_search_source_url: string;
+  };
+  storage: {
+    local_file: string;
+    drive_path: string;
+    drive_sync_enabled: boolean;
+    last_drive_sync_succeeded: boolean | null;
+    stores_prompts_or_documents: boolean;
+  };
 }
 
 export interface EligibilityAssessment {
@@ -195,6 +347,13 @@ export interface EligibilityAssessment {
   band: string;
   confidence: string;
   matched_skills: string[];
+  exact_matched_skills?: string[];
+  equivalent_matched_skills?: string[];
+  skill_match_evidence?: Record<string, {
+    match_type: "exact" | "equivalent";
+    evidence_ids: string[];
+    evidence_kinds: string[];
+  }>;
   missing_skills: string[];
   gaps: string[];
   experience_reason: string;
@@ -244,8 +403,10 @@ export interface JobAnalysis {
   model: string;
   cached: boolean;
   research_stats: Record<string, Scalar>;
+  ai_usage?: AIActionUsage;
   warnings?: string[];
   baseline_resume_configured: boolean;
+  eligibility_evidence_source?: "active_baseline_resume" | "verified_profile_snapshot";
   privacy: {
     gmail_content_sent: boolean;
     contact_data_sent: boolean;
@@ -263,7 +424,27 @@ export interface GeneratedArtifact {
   mime_type: string;
   drive_url: string;
   folder_url: string;
+  folder_path?: string;
   download_url: string;
+}
+
+export interface AtsAlignmentScore {
+  score: number | null;
+  band: string;
+  required_coverage: number | null;
+  preferred_coverage: number | null;
+  matched_required: string[];
+  missing_required: string[];
+  matched_preferred: string[];
+  missing_preferred: string[];
+  breakdown: string;
+}
+
+export interface AtsAlignmentComparison {
+  before: AtsAlignmentScore;
+  after: AtsAlignmentScore | null;
+  delta: number | null;
+  methodology: string;
 }
 
 export interface GeneratedDocumentSet {
@@ -272,11 +453,20 @@ export interface GeneratedDocumentSet {
   artifacts: GeneratedArtifact[];
   model: string;
   plan_cached: boolean;
+  ai_usage?: AIActionUsage;
   change_notes: string[];
   keyword_alignment: string[];
   confirmed_skills_added: string[];
+  documented_equivalent_skills_added: string[];
+  skill_placements: Array<{
+    skill: string;
+    target_skill_id: string;
+    category: string;
+  }>;
+  experience_bullets_reframed: number;
   reference_points_used: string[];
   warnings: string[];
   requires_user_review: boolean;
+  ats_alignment: AtsAlignmentComparison;
   baseline_unchanged: boolean;
 }

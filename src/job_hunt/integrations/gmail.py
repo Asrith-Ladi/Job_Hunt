@@ -4,7 +4,7 @@ import base64
 import binascii
 from datetime import datetime, timezone
 
-from job_hunt.models import AlertMessage
+from job_hunt.jobs.models import AlertMessage
 
 
 def _require_google_api():

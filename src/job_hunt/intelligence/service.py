@@ -1,4 +1,4 @@
-"""Manual official-job analysis and truth-preserving tailored-resume generation."""
+"""Manual official-job analysis and truth-preserving resume orchestration."""
 
 from __future__ import annotations
 
@@ -10,9 +10,9 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, Iterable, Mapping
 
-from job_hunt.document_outputs import build_cover_letter_docx, convert_docx_to_pdf
-from job_hunt.enrichment import personal_resume_profile, score_official_posting
-from job_hunt.gmail_service import AppPaths, GoogleConnectionService, TIME_ZONE
+from job_hunt.intelligence.usage import AIUsageLedger
+from job_hunt.resumes.outputs import build_cover_letter_docx, convert_docx_to_pdf
+from job_hunt.jobs.enrichment import personal_resume_profile, score_official_posting
 from job_hunt.integrations.ashby_postings import (
     ExactPostingResolution,
     resolve_exact_ashby_posting,
@@ -21,27 +21,39 @@ from job_hunt.integrations.openai_research import (
     OfficialJobResearcher,
     OpenAIResearchError,
 )
-from job_hunt.openai_config import OpenAISettings, load_openai_settings
-from job_hunt.private_io import read_json, write_json_atomic
-from job_hunt.resume_docx import (
+from job_hunt.intelligence.config import OpenAISettings, load_openai_settings
+from job_hunt.runtime.files import read_json, write_json_atomic
+from job_hunt.resumes.docx import (
     extract_resume_evidence,
     extract_resume_identity,
+    extract_resume_text,
     resume_sha256,
     tailor_resume_docx,
 )
-from job_hunt.resume_library import (
+from job_hunt.resumes.library import (
     DOCX_MIME_TYPE,
     PDF_MIME_TYPE,
     DriveResumeLibrary,
 )
-from job_hunt.resume_references import extract_reference_evidence
+from job_hunt.resumes.references import extract_reference_evidence
+from job_hunt.runtime.google import GoogleConnectionService
+from job_hunt.runtime.paths import AppPaths, TIME_ZONE
+from job_hunt.jobs.skills import (
+    map_job_skills_to_evidence,
+    normalize_skill_text,
+    resume_evidence_items,
+    skill_placement,
+)
 
 
 MAX_SUMMARY_WORDS = 100
 MAX_CONFIRMED_SKILL_EVIDENCE = 20
+RESUME_PLAN_VERSION = 3
 OUTPUT_RESUME_DOCX = "resume_docx"
 OUTPUT_RESUME_PDF = "resume_pdf"
 OUTPUT_COVER_LETTER = "cover_letter"
+APPLICATION_RESUME_STEM = "Asrith_Ladi_AI_ML_Engineer_6Y"
+APPLICATION_COVER_LETTER_NAME = f"{APPLICATION_RESUME_STEM}_Cover_Letter.docx"
 SUPPORTED_OUTPUTS = frozenset(
     {OUTPUT_RESUME_DOCX, OUTPUT_RESUME_PDF, OUTPUT_COVER_LETTER}
 )
@@ -60,8 +72,21 @@ RESUME_PLAN_SCHEMA = {
                 "properties": {
                     "section_id": {"type": "string"},
                     "bullet_order": {"type": "array", "items": {"type": "string"}},
+                    "bullet_rewrites": {
+                        "type": "array",
+                        "maxItems": 12,
+                        "items": {
+                            "type": "object",
+                            "additionalProperties": False,
+                            "properties": {
+                                "bullet_id": {"type": "string"},
+                                "text": {"type": "string"},
+                            },
+                            "required": ["bullet_id", "text"],
+                        },
+                    },
                 },
-                "required": ["section_id", "bullet_order"],
+                "required": ["section_id", "bullet_order", "bullet_rewrites"],
             },
         },
         "reference_evidence_ids": {"type": "array", "items": {"type": "string"}},
@@ -86,13 +111,26 @@ Use only facts explicitly present in resume_evidence. Never invent or upgrade sk
 years, employers, titles, dates, metrics, education, certifications, ownership, or impact.
 Do not claim a job requirement that is absent from resume_evidence. Write a concise
 45-75 word professional summary. Rank every supplied skill ID and every bullet ID by
-relevance; IDs must be copied exactly. You may reorder evidence but may not create,
-rewrite, or omit evidence bullets. change_notes must describe only truthful positioning
-changes, and keyword_alignment may contain only phrases already supported by the evidence.
+relevance; IDs must be copied exactly. Preserve every evidence bullet, but you may provide
+a natural one-sentence rewrite in bullet_rewrites when it preserves the original meaning.
+When supported_jd_keyword_evidence cites an experience-bullet ID in direct_evidence_ids,
+reframe the strongest
+one to four relevant bullets with the employer's exact wording; use an empty rewrite list
+when no bullet-specific mapping exists. Keep every original metric and technology claim
+unchanged. Add an exact JD phrase to a bullet only when direct_evidence_ids cites that
+same bullet. A summary may synthesize any supported_jd_keyword_evidence, but it must not
+expand beyond the cited facts. Otherwise leave the wording unchanged. Avoid keyword
+stuffing: prefer one or two
+high-value exact phrases in the most relevant sentences. change_notes must describe only
+truthful positioning changes, and keyword_alignment may contain only phrases supported by
+documented or explicitly user-confirmed evidence.
 Reference points are additional verified evidence, not permission to invent new facts;
-select only their supplied IDs. user_confirmed_skill_evidence contains professional facts
-the user explicitly confirmed; you may use those facts and exact skill labels naturally,
-but you may not expand beyond the supplied note. If cover_letter_requested is true, write 3-4 concise,
+select only their supplied IDs. Do not move a reference point into a work-experience bullet
+because that could misattribute it to an employer. user_confirmed_skill_evidence contains
+professional facts the user explicitly confirmed; you may use those facts and exact skill
+labels naturally, but you may not expand beyond the supplied note. Skill placement in the
+DOCX is deterministic, so do not create new skill-section prose. If cover_letter_requested
+is true, write 3-4 concise,
 human paragraphs (roughly 180-300 words total) for the named role and company. Do not add
 contact details, a candidate name, placeholders, or unsupported claims. If it is false,
 return an empty cover_letter_paragraphs array.
@@ -116,13 +154,147 @@ def _normalize_text(value: object) -> str:
     return re.sub(r"\s+", " ", re.sub(r"[^a-z0-9+#.]+", " ", value)).strip()
 
 
+_ATS_IGNORED_KEYWORD_TOKENS = frozenset(
+    {
+        "a",
+        "an",
+        "and",
+        "experience",
+        "for",
+        "in",
+        "knowledge",
+        "of",
+        "or",
+        "proficiency",
+        "skill",
+        "skills",
+        "strong",
+        "the",
+        "to",
+        "using",
+        "with",
+    }
+)
+
+
+def _normalize_ats_text(value: object) -> str:
+    value = str(value or "").casefold().replace("&", " and ")
+    return re.sub(r"\s+", " ", re.sub(r"[^a-z0-9+#]+", " ", value)).strip()
+
+
+def _unique_skill_labels(values: Iterable[object]) -> list[str]:
+    result: list[str] = []
+    seen: set[str] = set()
+    for value in values or []:
+        label = re.sub(r"\s+", " ", str(value or "").strip())[:160]
+        key = _normalize_text(label)
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        result.append(label)
+    return result
+
+
+def _ats_keyword_matches(
+    label: str,
+    normalized_resume: str,
+    resume_tokens: set[str],
+) -> bool:
+    """Match one extracted JD term using documented, deterministic text rules."""
+
+    normalized_label = _normalize_ats_text(label)
+    if not normalized_label:
+        return False
+    padded_resume = f" {normalized_resume} "
+    alternatives = [
+        value.strip()
+        for value in re.split(r"\s+or\s+", normalized_label)
+        if value.strip()
+    ]
+    for alternative in alternatives:
+        if f" {alternative} " in padded_resume:
+            return True
+        tokens = [
+            token
+            for token in alternative.split()
+            if token not in _ATS_IGNORED_KEYWORD_TOKENS
+        ]
+        if tokens and all(token in resume_tokens for token in tokens):
+            return True
+    return False
+
+
+def score_ats_alignment(
+    posting: Mapping[str, Any],
+    resume_text: str,
+) -> dict[str, Any]:
+    """Estimate transparent JD-keyword coverage; this is not an employer ATS score."""
+
+    required = _unique_skill_labels(posting.get("required_skills") or [])
+    preferred = _unique_skill_labels(posting.get("preferred_skills") or [])
+    normalized_resume = _normalize_ats_text(resume_text)
+    resume_tokens = set(normalized_resume.split())
+
+    matched_required = [
+        label
+        for label in required
+        if _ats_keyword_matches(label, normalized_resume, resume_tokens)
+    ]
+    matched_preferred = [
+        label
+        for label in preferred
+        if _ats_keyword_matches(label, normalized_resume, resume_tokens)
+    ]
+    missing_required = [label for label in required if label not in matched_required]
+    missing_preferred = [label for label in preferred if label not in matched_preferred]
+    required_coverage = (
+        round(100 * len(matched_required) / len(required)) if required else None
+    )
+    preferred_coverage = (
+        round(100 * len(matched_preferred) / len(preferred)) if preferred else None
+    )
+
+    if required and preferred:
+        score = round(0.8 * int(required_coverage or 0) + 0.2 * int(preferred_coverage or 0))
+        weighting = "Required terms 80%; preferred terms 20%."
+    elif required:
+        score = int(required_coverage or 0)
+        weighting = "Required terms 100%; the JD supplied no preferred terms."
+    elif preferred:
+        score = int(preferred_coverage or 0)
+        weighting = "Preferred terms 100%; the JD supplied no required terms."
+    else:
+        score = None
+        weighting = "The verified JD supplied no reliable skill terms to score."
+
+    if score is None:
+        band = "Not scorable"
+    elif score >= 80:
+        band = "Strong keyword alignment"
+    elif score >= 60:
+        band = "Moderate keyword alignment"
+    elif score >= 40:
+        band = "Limited keyword alignment"
+    else:
+        band = "Low keyword alignment"
+
+    required_summary = f"{len(matched_required)}/{len(required)} required"
+    preferred_summary = f"{len(matched_preferred)}/{len(preferred)} preferred"
+    return {
+        "score": score,
+        "band": band,
+        "required_coverage": required_coverage,
+        "preferred_coverage": preferred_coverage,
+        "matched_required": matched_required,
+        "missing_required": missing_required,
+        "matched_preferred": matched_preferred,
+        "missing_preferred": missing_preferred,
+        "breakdown": f"Matched {required_summary} and {preferred_summary}. {weighting}",
+    }
+
+
 def _safe_text(value: object, limit: int) -> str:
     return str(value or "").strip()[:limit]
-
-
-def _safe_filename(value: object, fallback: str) -> str:
-    text = re.sub(r"[^A-Za-z0-9._-]+", "_", str(value or "").strip()).strip("._-")
-    return (text[:70] or fallback).strip("._-")
 
 
 _USER_EVIDENCE_DIRECT_CONTACT = (
@@ -243,6 +415,33 @@ class ResumePlanner:
             client = OpenAI(api_key=str(api_key).strip())
         self.client = client
         self.model = str(model).strip()
+        self._usage_recorder: Callable[..., dict[str, Any]] | None = None
+        self._usage_context: dict[str, Any] = {}
+
+    def configure_usage_recording(
+        self,
+        recorder: Callable[..., dict[str, Any]],
+        *,
+        context: Mapping[str, Any] | None = None,
+    ) -> None:
+        """Attach privacy-safe response metering for this manual plan action."""
+
+        self._usage_recorder = recorder
+        self._usage_context = dict(context or {})
+
+    def _record_usage(self, response: object) -> None:
+        if self._usage_recorder is None:
+            return
+        try:
+            self._usage_recorder(
+                response,
+                operation="resume_plan",
+                model=self.model,
+                context=self._usage_context,
+            )
+        except Exception:
+            # A usage-ledger failure must not discard a paid planning response.
+            return
 
     def plan(
         self,
@@ -295,6 +494,7 @@ class ResumePlanner:
                 },
                 store=False,
             )
+            self._record_usage(response)
             output = str(getattr(response, "output_text", "") or "").strip()
             if not output:
                 raise ValueError("The model returned no resume plan.")
@@ -352,6 +552,84 @@ def _evidence_text(evidence: Mapping[str, Any]) -> str:
     )
 
 
+def _supported_keyword_mappings(evidence: Mapping[str, Any]) -> dict[str, dict[str, Any]]:
+    return {
+        normalize_skill_text(item.get("skill")): dict(item)
+        for item in evidence.get("supported_jd_keyword_evidence") or []
+        if isinstance(item, Mapping) and normalize_skill_text(item.get("skill"))
+    }
+
+
+def _exact_keyword_occurs(label: object, value: object) -> bool:
+    normalized_value = f" {_normalize_ats_text(value)} "
+    normalized_label = _normalize_ats_text(label)
+    return any(
+        f" {alternative.strip()} " in normalized_value
+        for alternative in re.split(r"\s+or\s+", normalized_label)
+        if alternative.strip()
+    )
+
+
+def _bullet_rewrite_is_supported(
+    rewritten: str,
+    source_bullet: Mapping[str, Any],
+    posting: Mapping[str, Any],
+    evidence: Mapping[str, Any],
+) -> tuple[bool, str]:
+    source = re.sub(r"\s+", " ", str(source_bullet.get("text") or "").strip())
+    text = re.sub(r"\s+", " ", str(rewritten or "").strip())
+    if not 6 <= len(text.split()) <= 70 or len(text) > 500:
+        return False, "the rewritten bullet length was outside the safe range"
+    if re.search(r"\b(?:I|my|me)\b", text, re.IGNORECASE):
+        return False, "resume bullets must not introduce first-person wording"
+    if _contains_contact(text):
+        return False, "the rewritten bullet introduced contact or web information"
+    if re.search(r"\[[A-Z][A-Z0-9_ -]+\]|\{\{.+?\}\}", text):
+        return False, "the rewritten bullet introduced an unresolved placeholder"
+
+    source_numbers = set(re.findall(r"\d+(?:\.\d+)?%?\+?", source))
+    rewritten_numbers = set(re.findall(r"\d+(?:\.\d+)?%?\+?", text))
+    if rewritten_numbers != source_numbers:
+        return False, "the rewritten bullet added, removed, or changed a numeric claim"
+
+    target_company = _normalize_text(posting.get("company"))
+    if (
+        target_company
+        and target_company not in _normalize_text(source)
+        and target_company in _normalize_text(text)
+    ):
+        return False, "the rewritten bullet incorrectly claimed the target employer"
+
+    bullet_id = str(source_bullet.get("id") or "")
+    supported = _supported_keyword_mappings(evidence)
+    for skill in [
+        *(posting.get("required_skills") or []),
+        *(posting.get("preferred_skills") or []),
+    ]:
+        if not _exact_keyword_occurs(skill, text) or _exact_keyword_occurs(skill, source):
+            continue
+        mapping = supported.get(normalize_skill_text(skill), {})
+        direct_ids = {
+            str(value) for value in mapping.get("direct_evidence_ids") or []
+        }
+        if bullet_id not in direct_ids:
+            return False, f"the exact JD phrase {skill} was not supported by this bullet"
+
+    source_tokens = {
+        token
+        for token in _normalize_ats_text(source).split()
+        if token not in _ATS_IGNORED_KEYWORD_TOKENS and len(token) > 1
+    }
+    rewritten_tokens = set(_normalize_ats_text(text).split())
+    if source_tokens:
+        retained = len(source_tokens.intersection(rewritten_tokens)) / len(source_tokens)
+        if retained < 0.6:
+            return False, "the rewrite moved too far from the original evidence"
+    if len(text.split()) > len(source.split()) + 12:
+        return False, "the rewrite added too much wording beyond the original evidence"
+    return True, ""
+
+
 def _summary_is_supported(
     summary: str,
     posting: Mapping[str, Any],
@@ -372,6 +650,7 @@ def _summary_is_supported(
 
     normalized_evidence = _normalize_text(evidence_text)
     normalized_summary = _normalize_text(summary)
+    supported_keywords = _supported_keyword_mappings(evidence)
     target_company = _normalize_text(posting.get("company"))
     if (
         target_company
@@ -383,11 +662,10 @@ def _summary_is_supported(
         *(posting.get("required_skills") or []),
         *(posting.get("preferred_skills") or []),
     ]:
-        normalized_skill = _normalize_text(skill)
         if (
-            len(normalized_skill) >= 2
-            and normalized_skill not in normalized_evidence
-            and normalized_skill in normalized_summary
+            not _exact_keyword_occurs(skill, evidence_text)
+            and _exact_keyword_occurs(skill, summary)
+            and normalize_skill_text(skill) not in supported_keywords
         ):
             return False, f"The generated summary claimed unsupported skill: {skill}."
     return True, ""
@@ -454,17 +732,15 @@ def _cover_letter_is_supported(
     generated_numbers = set(re.findall(r"\d+(?:\.\d+)?%?\+?", text))
     if not generated_numbers.issubset(source_numbers):
         return False, "The generated cover letter introduced an unsupported numeric claim."
-    normalized_source = _normalize_text(source)
-    normalized_text = _normalize_text(text)
+    supported_keywords = _supported_keyword_mappings(evidence)
     for skill in [
         *(posting.get("required_skills") or []),
         *(posting.get("preferred_skills") or []),
     ]:
-        normalized_skill = _normalize_text(skill)
         if (
-            len(normalized_skill) >= 2
-            and normalized_skill not in normalized_source
-            and normalized_skill in normalized_text
+            not _exact_keyword_occurs(skill, source)
+            and _exact_keyword_occurs(skill, text)
+            and normalize_skill_text(skill) not in supported_keywords
         ):
             return False, f"The generated cover letter claimed unsupported skill: {skill}."
     return True, ""
@@ -484,6 +760,10 @@ def normalize_resume_plan(
     summary = re.sub(r"\s+", " ", str(raw.get("summary") or "").strip())
     supported, warning = _summary_is_supported(summary, posting, evidence)
     warnings: list[str] = []
+    for value in raw.get("validation_warnings") or []:
+        prior_warning = _safe_text(value, 500)
+        if prior_warning and prior_warning not in warnings:
+            warnings.append(prior_warning)
     if not supported:
         summary = original_summary
         warnings.append(warning + " The original summary was retained.")
@@ -498,12 +778,41 @@ def normalize_resume_plan(
     experience_sections = []
     for section in evidence.get("experience_sections") or []:
         section_id = str(section.get("section_id") or "")
-        bullet_ids = [str(item.get("id") or "") for item in section.get("bullets") or []]
+        bullets_by_id = {
+            str(item.get("id") or ""): dict(item)
+            for item in section.get("bullets") or []
+            if str(item.get("id") or "")
+        }
+        bullet_ids = list(bullets_by_id)
         requested = raw_sections.get(section_id, {}).get("bullet_order") or []
+        accepted_rewrites: list[dict[str, str]] = []
+        seen_rewrites: set[str] = set()
+        for rewrite in raw_sections.get(section_id, {}).get("bullet_rewrites") or []:
+            if not isinstance(rewrite, Mapping):
+                continue
+            bullet_id = str(rewrite.get("bullet_id") or "")
+            rewritten = re.sub(r"\s+", " ", str(rewrite.get("text") or "").strip())
+            if bullet_id not in bullets_by_id or bullet_id in seen_rewrites:
+                continue
+            is_supported, rewrite_warning = _bullet_rewrite_is_supported(
+                rewritten,
+                bullets_by_id[bullet_id],
+                posting,
+                evidence,
+            )
+            if is_supported and rewritten != bullets_by_id[bullet_id]["text"]:
+                accepted_rewrites.append({"bullet_id": bullet_id, "text": rewritten})
+                seen_rewrites.add(bullet_id)
+            elif not is_supported:
+                warnings.append(
+                    f"One experience-bullet rewrite was rejected because {rewrite_warning}; "
+                    "the original bullet was retained."
+                )
         experience_sections.append(
             {
                 "section_id": section_id,
                 "bullet_order": _normalize_order(requested, bullet_ids),
+                "bullet_rewrites": accepted_rewrites,
             }
         )
 
@@ -514,10 +823,15 @@ def normalize_resume_plan(
         raw.get("reference_evidence_ids"), reference_ids
     )[:8]
     evidence_text = _normalize_text(_evidence_text(evidence))
+    supported_keywords = _supported_keyword_mappings(evidence)
     keyword_alignment = []
     for value in raw.get("keyword_alignment") or []:
         text = _safe_text(value, 120)
-        if text and _normalize_text(text) in evidence_text and text not in keyword_alignment:
+        supported = (
+            _normalize_text(text) in evidence_text
+            or normalize_skill_text(text) in supported_keywords
+        )
+        if text and supported and text not in keyword_alignment:
             keyword_alignment.append(text)
         if len(keyword_alignment) >= 12:
             break
@@ -529,6 +843,31 @@ def normalize_resume_plan(
     for skill in confirmed_skills:
         if skill not in keyword_alignment:
             keyword_alignment.append(skill)
+    baseline_missing = [
+        _safe_text(value, 120)
+        for value in evidence.get("baseline_missing_jd_keywords") or []
+        if _safe_text(value, 120)
+    ]
+    documented_equivalent_skills = [
+        skill
+        for skill in baseline_missing
+        if normalize_skill_text(skill) in supported_keywords
+        and normalize_skill_text(skill)
+        not in {normalize_skill_text(value) for value in confirmed_skills}
+    ]
+    skill_addition_labels: list[str] = []
+    seen_additions: set[str] = set()
+    for skill in documented_equivalent_skills + confirmed_skills:
+        key = normalize_skill_text(skill)
+        if key and key not in seen_additions:
+            seen_additions.add(key)
+            skill_addition_labels.append(skill)
+            if skill not in keyword_alignment:
+                keyword_alignment.append(skill)
+    skill_additions = [
+        skill_placement(skill, evidence.get("skills") or [])
+        for skill in skill_addition_labels
+    ]
     change_notes = []
     for value in raw.get("change_notes") or []:
         text = _safe_text(value, 240)
@@ -538,12 +877,29 @@ def normalize_resume_plan(
             break
     if confirmed_skills:
         confirmed_change_note = (
-            "Added user-confirmed JD keyword(s) to Technical Skills: "
+            "Placed user-confirmed JD keyword(s) in relevant Technical Skills categories: "
             + ", ".join(confirmed_skills)
             + "."
         )
         if confirmed_change_note not in change_notes:
             change_notes.append(confirmed_change_note)
+    if documented_equivalent_skills:
+        equivalent_note = (
+            "Added exact JD wording backed by equivalent documented evidence to relevant "
+            "Technical Skills categories: "
+            + ", ".join(documented_equivalent_skills)
+            + "."
+        )
+        if equivalent_note not in change_notes:
+            change_notes.append(equivalent_note)
+    rewrite_count = sum(
+        len(section.get("bullet_rewrites") or []) for section in experience_sections
+    )
+    if rewrite_count:
+        change_notes.append(
+            f"Reframed {rewrite_count} existing experience bullet(s) with supported JD wording "
+            "without changing the underlying facts or metrics."
+        )
 
     cover_letter_paragraphs: list[str] = []
     if cover_letter_requested:
@@ -574,6 +930,8 @@ def normalize_resume_plan(
         "cover_letter_paragraphs": cover_letter_paragraphs,
         "keyword_alignment": keyword_alignment,
         "confirmed_skills": confirmed_skills,
+        "documented_equivalent_skills_added": documented_equivalent_skills,
+        "skill_additions": skill_additions,
         "change_notes": change_notes,
         "validation_warnings": warnings,
     }
@@ -594,6 +952,7 @@ class JobIntelligenceService:
             Callable[[Mapping[str, Any]], ExactPostingResolution] | None
         ) = None,
         resume_library=None,
+        usage_ledger=None,
         pdf_converter=convert_docx_to_pdf,
         cover_letter_builder=build_cover_letter_docx,
     ) -> None:
@@ -610,7 +969,11 @@ class JobIntelligenceService:
         self.resume_library = resume_library or DriveResumeLibrary(paths, google_connection)
         self.pdf_converter = pdf_converter
         self.cover_letter_builder = cover_letter_builder
-        self.root = paths.secrets_root / "job_intelligence"
+        self.root = paths.runtime_root / "job_intelligence"
+        self.usage_ledger = usage_ledger or AIUsageLedger(
+            self.root / "ai_usage.json",
+            google_connection,
+        )
         self.research_cache_path = self.root / "official_research_cache.json"
         self.analysis_root = self.root / "analyses"
         self.plan_root = self.root / "resume_plans"
@@ -742,6 +1105,39 @@ class JobIntelligenceService:
     def _settings(self) -> OpenAISettings:
         return self.settings_loader(self.paths.project_root)
 
+    def _configure_usage_recording(
+        self,
+        component: object,
+        *,
+        context: Mapping[str, Any],
+        captured: list[dict[str, Any]],
+    ) -> None:
+        configure = getattr(component, "configure_usage_recording", None)
+        if not callable(configure):
+            return
+
+        def recorder(
+            response: object,
+            *,
+            operation: str,
+            model: str,
+            context: Mapping[str, Any] | None = None,
+        ) -> dict[str, Any]:
+            merged_context = dict(context or {})
+            event = self.usage_ledger.record_response(
+                response,
+                operation=operation,
+                model=model,
+                context=merged_context,
+            )
+            captured.append(event)
+            return event
+
+        configure(recorder, context=context)
+
+    def ai_usage(self, *, limit: int = 20) -> dict[str, Any]:
+        return self.usage_ledger.report(limit=limit)
+
     def status(self) -> dict[str, Any]:
         settings = self._settings()
         library = self.resume_library.status()
@@ -751,6 +1147,7 @@ class JobIntelligenceService:
             "configuration_source": settings.source,
             "manual_only": True,
             "contact_data_sent_to_openai": False,
+            "ai_usage": self.ai_usage(limit=5),
             **library,
         }
 
@@ -807,6 +1204,12 @@ class JobIntelligenceService:
         try:
             existing = read_json(self.research_cache_path, default={}) or {}
             researcher = self.researcher_factory(settings.api_key, settings.model)
+            usage_events: list[dict[str, Any]] = []
+            self._configure_usage_recording(
+                researcher,
+                context=facts,
+                captured=usage_events,
+            )
             resolution = (
                 self.exact_posting_resolver(facts)
                 if facts.get("official_url")
@@ -834,12 +1237,28 @@ class JobIntelligenceService:
                 str(item.get("official_job_id") or ""): dict(item)
                 for item in research.get("postings") or []
             }
+            library_status = self.resume_library.status()
+            baseline_evidence_items = None
+            if library_status.get("baseline_resume_configured"):
+                try:
+                    scoring_inputs = self.resume_library.materialize_inputs()
+                    scoring_evidence = extract_resume_evidence(
+                        Path(scoring_inputs["baseline_path"])
+                    )
+                    baseline_evidence_items = resume_evidence_items(scoring_evidence)
+                except Exception:
+                    # Official-job analysis remains available if Drive materialization fails.
+                    baseline_evidence_items = None
             candidates: list[dict[str, Any]] = []
             for mapping in research.get("matches", {}).get(facts["job_record_id"], []):
                 posting = postings.get(str(mapping.get("official_job_id") or ""))
                 if not posting:
                     continue
-                eligibility = score_official_posting(posting, personal_resume_profile())
+                eligibility = score_official_posting(
+                    posting,
+                    personal_resume_profile(),
+                    evidence_items=baseline_evidence_items,
+                )
                 candidates.append(
                     {
                         **posting,
@@ -858,7 +1277,7 @@ class JobIntelligenceService:
             verified_at = str(research.get("verified_at") or "")
             analysis_id = _analysis_id(facts, candidates, verified_at)
             stats = dict(research.get("research_stats") or {})
-            library_status = self.resume_library.status()
+            api_calls = int(stats.get("api_calls") or 0)
             analysis = {
                 "analysis_id": analysis_id,
                 "status": "completed" if candidates else "no_official_match",
@@ -866,11 +1285,21 @@ class JobIntelligenceService:
                 "candidates": candidates,
                 "verified_at": verified_at,
                 "model": settings.model,
-                "cached": int(stats.get("api_calls") or 0) == 0,
+                "cached": api_calls == 0,
                 "research_stats": stats,
+                "ai_usage": self.usage_ledger.action_summary(
+                    usage_events,
+                    cache_reused=api_calls == 0,
+                    expected_api_calls=api_calls,
+                ),
                 "warnings": analysis_warnings,
                 "baseline_resume_configured": bool(
                     library_status.get("baseline_resume_configured")
+                ),
+                "eligibility_evidence_source": (
+                    "active_baseline_resume"
+                    if baseline_evidence_items is not None
+                    else "verified_profile_snapshot"
                 ),
                 "privacy": {
                     "gmail_content_sent": False,
@@ -911,7 +1340,8 @@ class JobIntelligenceService:
         cover_letter_requested: bool,
     ) -> str:
         value = (
-            f"{analysis_id}\0{official_job_id}\0{resume_sha256(base_resume)}\0"
+            f"v{RESUME_PLAN_VERSION}\0{analysis_id}\0{official_job_id}\0"
+            f"{resume_sha256(base_resume)}\0"
             f"{reference_digest}\0{confirmed_evidence_digest}\0{model}\0"
             f"{int(cover_letter_requested)}"
         )
@@ -959,12 +1389,29 @@ class JobIntelligenceService:
             inputs = self.resume_library.materialize_inputs()
             base_resume = Path(inputs["baseline_path"])
             evidence = extract_resume_evidence(base_resume)
+            ats_before = score_ats_alignment(posting, extract_resume_text(base_resume))
             reference_points = extract_reference_evidence(
                 inputs.get("references") or [],
                 posting,
             )
             evidence["reference_points"] = reference_points
             evidence["user_confirmed_skill_evidence"] = confirmed_evidence
+            job_skills = _unique_skill_labels(
+                [
+                    *(posting.get("required_skills") or []),
+                    *(posting.get("preferred_skills") or []),
+                ]
+            )
+            evidence["supported_jd_keyword_evidence"] = map_job_skills_to_evidence(
+                job_skills,
+                resume_evidence_items(evidence),
+            )
+            evidence["baseline_missing_jd_keywords"] = _unique_skill_labels(
+                [
+                    *(ats_before.get("missing_required") or []),
+                    *(ats_before.get("missing_preferred") or []),
+                ]
+            )
             if confirmed_evidence:
                 self.resume_library.store_confirmed_skill_evidence(confirmed_evidence)
             eligibility = dict(posting.get("eligibility") or {})
@@ -987,8 +1434,21 @@ class JobIntelligenceService:
             plan_path = self.plan_root / f"{plan_key}.json"
             plan = None if refresh_plan else read_json(plan_path)
             plan_cached = isinstance(plan, dict)
+            usage_events: list[dict[str, Any]] = []
             if not plan_cached:
                 planner = self.planner_factory(settings.api_key, settings.model)
+                self._configure_usage_recording(
+                    planner,
+                    context={
+                        "job_record_id": str(
+                            (analysis.get("job") or {}).get("job_record_id") or ""
+                        ),
+                        "official_job_id": str(official_job_id),
+                        "company": posting.get("company"),
+                        "title": posting.get("title"),
+                    },
+                    captured=usage_events,
+                )
                 plan = planner.plan(
                     posting,
                     evidence,
@@ -1006,23 +1466,22 @@ class JobIntelligenceService:
                 write_json_atomic(plan_path, plan)
 
             now = datetime.now(TIME_ZONE).replace(microsecond=0)
-            company = _safe_filename(posting.get("company"), "company")
-            title = _safe_filename(posting.get("title"), "role")
+            company_name = _safe_text(posting.get("company"), 160) or "Unknown Company"
+            role_name = _safe_text(posting.get("title"), 200) or "Role"
             generation_id = "generation_" + hashlib.sha256(
                 f"{plan_key}\0{now.isoformat()}".encode("utf-8")
             ).hexdigest()[:22]
-            suffix = generation_id[-6:]
             generation_root = self.output_root / now.date().isoformat() / generation_id
             generation_root.mkdir(parents=True, exist_ok=True)
             warnings = list(plan.get("validation_warnings") or [])
             artifact_specs: list[tuple[str, Path, str]] = []
             working_resume: Path | None = None
+            ats_after: dict[str, Any] | None = None
             if {OUTPUT_RESUME_DOCX, OUTPUT_RESUME_PDF}.intersection(requested_outputs):
-                resume_name = (
-                    f"{company}_{title}_Resume_{now.strftime('%Y-%m-%d')}_{suffix}.docx"
-                )
+                resume_name = f"{APPLICATION_RESUME_STEM}.docx"
                 working_resume = generation_root / resume_name
                 tailor_resume_docx(base_resume, working_resume, dict(plan))
+                ats_after = score_ats_alignment(posting, extract_resume_text(working_resume))
                 if OUTPUT_RESUME_DOCX in requested_outputs:
                     artifact_specs.append((OUTPUT_RESUME_DOCX, working_resume, DOCX_MIME_TYPE))
             if OUTPUT_RESUME_PDF in requested_outputs:
@@ -1032,11 +1491,7 @@ class JobIntelligenceService:
                 self.pdf_converter(working_resume, pdf_path)
                 artifact_specs.append((OUTPUT_RESUME_PDF, pdf_path, PDF_MIME_TYPE))
             if OUTPUT_COVER_LETTER in requested_outputs:
-                cover_name = (
-                    f"{company}_{title}_Cover_Letter_"
-                    f"{now.strftime('%Y-%m-%d')}_{suffix}.docx"
-                )
-                cover_path = generation_root / cover_name
+                cover_path = generation_root / APPLICATION_COVER_LETTER_NAME
                 self.cover_letter_builder(
                     cover_path,
                     identity=extract_resume_identity(base_resume),
@@ -1054,8 +1509,10 @@ class JobIntelligenceService:
                 ).hexdigest()[:22]
                 uploaded = self.resume_library.upload_artifact(
                     local_path,
-                    now.date().isoformat(),
-                    mime_type,
+                    company_name=company_name,
+                    role_name=role_name,
+                    prepared_on=now.date().isoformat(),
+                    mime_type=mime_type,
                 )
                 record = {
                     "artifact_id": artifact_id,
@@ -1081,7 +1538,9 @@ class JobIntelligenceService:
                             "mime_type",
                             "drive_url",
                             "folder_url",
+                            "folder_path",
                         )
+                        if key in record
                     }
                 )
             self.resume_library.record_artifacts(stored_records)
@@ -1098,18 +1557,48 @@ class JobIntelligenceService:
                 for item_id in plan.get("reference_evidence_ids") or []
                 if item_id in reference_by_id
             ]
+            before_score = ats_before.get("score")
+            after_score = ats_after.get("score") if ats_after else None
+            score_delta = (
+                int(after_score) - int(before_score)
+                if before_score is not None and after_score is not None
+                else None
+            )
             return {
                 "generation_id": generation_id,
                 "generated_at": now.isoformat(),
                 "artifacts": artifacts,
                 "model": settings.model,
                 "plan_cached": plan_cached,
+                "ai_usage": self.usage_ledger.action_summary(
+                    usage_events,
+                    cache_reused=plan_cached,
+                    expected_api_calls=int(not plan_cached),
+                ),
                 "change_notes": list(plan.get("change_notes") or []),
                 "keyword_alignment": list(plan.get("keyword_alignment") or []),
                 "confirmed_skills_added": list(plan.get("confirmed_skills") or []),
+                "documented_equivalent_skills_added": list(
+                    plan.get("documented_equivalent_skills_added") or []
+                ),
+                "skill_placements": list(plan.get("skill_additions") or []),
+                "experience_bullets_reframed": sum(
+                    len(section.get("bullet_rewrites") or [])
+                    for section in plan.get("experience_sections") or []
+                ),
                 "reference_points_used": references_used,
                 "warnings": warnings,
                 "requires_user_review": True,
+                "ats_alignment": {
+                    "before": ats_before,
+                    "after": ats_after,
+                    "delta": score_delta,
+                    "methodology": (
+                        "Local deterministic coverage of required and preferred terms "
+                        "extracted from the verified JD. This is not a score from an "
+                        "employer or ATS vendor."
+                    ),
+                },
                 "baseline_unchanged": resume_sha256(base_resume)
                 == str((inputs.get("baseline") or {}).get("sha256") or ""),
             }

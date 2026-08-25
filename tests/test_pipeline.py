@@ -1,8 +1,8 @@
 import unittest
 
-from job_hunt.config import RunConfig
-from job_hunt.models import AlertMessage
-from job_hunt.pipeline import run_pipeline
+from job_hunt.gmail.config import RunConfig
+from job_hunt.jobs.models import AlertMessage
+from job_hunt.gmail.pipeline import run_pipeline
 
 
 class FakeReader:

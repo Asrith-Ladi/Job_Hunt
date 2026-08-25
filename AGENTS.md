@@ -5,7 +5,7 @@
 Use this order when deciding what to do:
 
 1. The user's latest explicit instruction and approved decisions.
-2. `docs/discussions/017_network_review_columns_and_templates.md` for the current network table/template design, `docs/discussions/016_network_profile_reviews.md` for its ranking foundation, `docs/discussions/015_gmail_offline_referrals.md` for Gmail referral enrichment, `docs/discussions/014_company_portals_and_ats_sources.md` for public discovery, `docs/discussions/013_react_fastapi_migration.md` for the UI boundary, then `docs/discussions/001_gmail_alerts_to_google_sheet.md` for the Gmail foundation.
+2. `docs/discussions/031_transient_search_and_application_queue.md` for the active search/persistence lifecycle, `docs/discussions/017_network_review_columns_and_templates.md` for the network table/template design, `docs/discussions/015_gmail_offline_referrals.md` for Gmail referral enrichment, `docs/discussions/014_company_portals_and_ats_sources.md` for public discovery, `docs/discussions/013_react_fastapi_migration.md` for the UI boundary, then `docs/discussions/001_gmail_alerts_to_google_sheet.md` for the Gmail foundation.
 3. `docs/PROJECT_BRIEF.md` for stable project direction and boundaries.
 4. `docs/memory.md` for user-approved fixed project instructions.
 5. `docs/queue.md` for proposed/new work and its status.
@@ -17,7 +17,7 @@ Do not read the full automation plan by default. Search it by heading or keyword
 
 - This is a personal project first, with clean boundaries that can support more users later.
 - Do not build multi-tenant infrastructure before the personal workflow works.
-- The personal MVP is a manually triggered React UI with independent Gmail, selected Company Portals, public ATS, and offline Network Reviews tabs; the three job-source phases write timestamped Excel workbooks to the app-owned Drive folder.
+- The personal MVP is a manually triggered React UI with Search, Results & Applications, and offline Network Reviews. Gmail, selected Company Portal, and public ATS searches are temporary; only explicit job-tracking actions write to the canonical Drive application queue. Historical Gmail workbooks remain reviewable compatibility artifacts.
 - Do not scrape protected LinkedIn or Naukri pages; alerts and user-provided links are discovery inputs.
 - Do not submit job applications.
 - Gmail review rows may use the saved LinkedIn export snapshot for deterministic same-company referral suggestions; never read or expose connection emails, and always label the match as unverified.

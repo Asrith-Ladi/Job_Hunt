@@ -1,4 +1,4 @@
-"""Offline referral suggestions for normalized Gmail-alert jobs.
+"""Offline referral suggestions used by Gmail jobs and network review.
 
 The enrichment deliberately uses only the non-contact fields in the saved
 LinkedIn export snapshot.  A company match is a lead to verify, not proof that
@@ -17,7 +17,7 @@ from urllib.parse import urlsplit
 
 from openpyxl import load_workbook
 
-from job_hunt.enrichment import (
+from job_hunt.jobs.enrichment import (
     Connection,
     canonical_company,
     cold_referral_message,
@@ -37,6 +37,7 @@ REFERRAL_COLUMNS = [
     "referral_eligibility",
     "referral_message",
 ]
+REFERRAL_CANDIDATES_FIELD = "referral_candidates"
 
 _REQUIRED_HEADERS = {
     "Connection Name",
@@ -211,7 +212,7 @@ def _connection_index(connections: Iterable[Connection]) -> dict[str, list[Conne
         key = normalize_text(canonical_company(connection.company))
         if key:
             indexed[key].append(connection)
-    for matches in indexed.values():
+    for key, matches in indexed.items():
         matches.sort(
             key=lambda item: (
                 -connection_relevance(item),
@@ -219,6 +220,15 @@ def _connection_index(connections: Iterable[Connection]) -> dict[str, list[Conne
                 normalize_text(item.full_name),
             )
         )
+        seen_profiles: set[str] = set()
+        unique_matches: list[Connection] = []
+        for item in matches:
+            profile_key = normalize_text(item.linkedin_url)
+            if profile_key in seen_profiles:
+                continue
+            seen_profiles.add(profile_key)
+            unique_matches.append(item)
+        indexed[key] = unique_matches
     return dict(indexed)
 
 
@@ -282,6 +292,7 @@ def _blank_referral_fields(status: str) -> dict[str, Any]:
         "referral_match_status": status,
         "referral_eligibility": "",
         "referral_message": "",
+        REFERRAL_CANDIDATES_FIELD: [],
     }
 
 
@@ -321,19 +332,15 @@ def enrich_gmail_referrals(
             enriched.append(record)
             continue
 
-        connection = matches[0]
         strengths = _role_strengths(record.get("title"))
         experience_note = _experience_note(record)
         job_url = str(record.get("official_url") or record.get("source_url") or "").strip()
-        record.update(
+        referral_candidates = [
             {
-                "referral_count": len(matches),
-                "referral_name": connection.full_name,
-                "referral_position": connection.position,
-                "referral_profile_url": connection.linkedin_url,
-                "referral_match_status": "offline_company_match_unverified",
-                "referral_eligibility": _eligibility_summary(record, strengths),
-                "referral_message": cold_referral_message(
+                "name": connection.full_name,
+                "position": connection.position,
+                "profile_url": connection.linkedin_url,
+                "message": cold_referral_message(
                     connection,
                     company,
                     str(record.get("title") or "this job").strip(),
@@ -341,6 +348,20 @@ def enrich_gmail_referrals(
                     strengths,
                     experience_note=experience_note,
                 ),
+            }
+            for connection in matches
+        ]
+        connection = matches[0]
+        record.update(
+            {
+                "referral_count": len(referral_candidates),
+                "referral_name": connection.full_name,
+                "referral_position": connection.position,
+                "referral_profile_url": connection.linkedin_url,
+                "referral_match_status": "offline_company_match_unverified",
+                "referral_eligibility": _eligibility_summary(record, strengths),
+                "referral_message": referral_candidates[0]["message"],
+                REFERRAL_CANDIDATES_FIELD: referral_candidates,
             }
         )
         jobs_with_candidate += 1

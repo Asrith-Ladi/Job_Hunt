@@ -1,6 +1,6 @@
 import unittest
 
-from job_hunt.experience import (
+from job_hunt.jobs.experience import (
     classify_experience_fit,
     experience_text_from_url,
     extract_experience_range,

@@ -11,7 +11,7 @@ from zoneinfo import ZoneInfo
 
 from googleapiclient.discovery import build
 
-from job_hunt.enrichment import (
+from job_hunt.jobs.enrichment import (
     ResumeProfile,
     canonical_company,
     cold_referral_message,

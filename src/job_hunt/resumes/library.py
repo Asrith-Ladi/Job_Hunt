@@ -8,7 +8,6 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Iterable, Mapping
 
-from job_hunt.gmail_service import AppPaths, GoogleConnectionService, TIME_ZONE
 from job_hunt.integrations.drive_storage import (
     build_drive_service,
     download_drive_file,
@@ -19,8 +18,10 @@ from job_hunt.integrations.drive_storage import (
     find_child_file,
     upload_or_update_file,
 )
-from job_hunt.private_io import read_json, write_json_atomic
-from job_hunt.resume_docx import (
+from job_hunt.runtime.files import read_json, write_json_atomic
+from job_hunt.runtime.google import GoogleConnectionService
+from job_hunt.runtime.paths import AppPaths, TIME_ZONE
+from job_hunt.resumes.docx import (
     extract_resume_evidence,
     resume_sha256,
     validate_resume_docx,
@@ -36,6 +37,7 @@ JSON_MIME_TYPE = "application/json"
 LIBRARY_FOLDER_NAME = "Resume Library"
 BASELINES_FOLDER_NAME = "Baselines"
 REFERENCES_FOLDER_NAME = "References"
+APPLICATION_RESUMES_FOLDER_NAME = "Resumes"
 MANIFEST_NAME = "resume_library.json"
 MANIFEST_VERSION = 2
 MAX_REFERENCE_BYTES = 8 * 1024 * 1024
@@ -55,6 +57,18 @@ def _safe_original_name(value: object, fallback: str) -> str:
     name = Path(str(value or "").strip()).name
     name = re.sub(r"[\x00-\x1f<>:\"/\\|?*]+", "_", name).strip(" .")
     return (name[:160] or fallback).strip(" .")
+
+
+def _safe_drive_folder_name(
+    value: object,
+    fallback: str,
+    *,
+    use_underscores: bool = False,
+) -> str:
+    name = re.sub(r"[\x00-\x1f<>:\"/\\|?*]+", "_", str(value or "").strip())
+    name = re.sub(r"\s+", "_" if use_underscores else " ", name)
+    name = re.sub(r"_+", "_", name).strip(" ._")
+    return (name[:120] or fallback).strip(" ._")
 
 
 def _safe_cache_name(sha256: str, original_name: str) -> str:
@@ -119,7 +133,7 @@ class DriveResumeLibrary:
         self.paths = paths
         self.google_connection = google_connection
         self.drive_factory = drive_factory
-        self.cache_root = paths.secrets_root / "job_intelligence" / "resume_library_cache"
+        self.cache_root = paths.runtime_root / "job_intelligence" / "resume_library_cache"
         self.manifest_cache_path = self.cache_root / MANIFEST_NAME
 
     def _require_drive(self):
@@ -532,20 +546,48 @@ class DriveResumeLibrary:
             "library_url": drive_folder_url(str(folders["library"]["id"])),
         }
 
-    def upload_artifact(self, local_path: Path, run_date: str, mime_type: str) -> dict[str, Any]:
-        """Upload one generated artifact into the dated Drive Resumes folder."""
+    def upload_artifact(
+        self,
+        local_path: Path,
+        *,
+        company_name: str,
+        role_name: str,
+        prepared_on: str,
+        mime_type: str,
+    ) -> dict[str, Any]:
+        """Upload one artifact into a company-first Drive application folder."""
+
+        if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", str(prepared_on or "")):
+            raise ValueError("The application document date must use YYYY-MM-DD.")
+        company_folder_name = _safe_drive_folder_name(company_name, "Unknown Company")
+        role_folder_name = _safe_drive_folder_name(
+            role_name,
+            "Role",
+            use_underscores=True,
+        )
+        application_folder_name = f"{prepared_on}_{role_folder_name}"
 
         drive = self._require_drive()
-        folders = ensure_job_hunt_folders(drive, run_date=str(run_date))
+        folders = ensure_job_hunt_folders(drive)
         resumes_folder = ensure_folder(
             drive,
-            "Resumes",
-            parent_id=str(folders["date"]["id"]),
+            APPLICATION_RESUMES_FOLDER_NAME,
+            parent_id=str(folders["root"]["id"]),
+        )
+        company_folder = ensure_folder(
+            drive,
+            company_folder_name,
+            parent_id=str(resumes_folder["id"]),
+        )
+        application_folder = ensure_folder(
+            drive,
+            application_folder_name,
+            parent_id=str(company_folder["id"]),
         )
         uploaded = upload_or_update_file(
             drive,
             Path(local_path),
-            parent_id=str(resumes_folder["id"]),
+            parent_id=str(application_folder["id"]),
             mime_type=mime_type,
         )
         return {
@@ -553,7 +595,11 @@ class DriveResumeLibrary:
             "drive_url": str(
                 uploaded.get("webViewLink") or drive_file_url(uploaded["id"])
             ),
-            "folder_url": drive_folder_url(str(resumes_folder["id"])),
+            "folder_url": drive_folder_url(str(application_folder["id"])),
+            "folder_path": (
+                f"Job Hunt/{APPLICATION_RESUMES_FOLDER_NAME}/"
+                f"{company_folder_name}/{application_folder_name}"
+            ),
         }
 
     def record_artifacts(self, records: Iterable[Mapping[str, Any]]) -> None:

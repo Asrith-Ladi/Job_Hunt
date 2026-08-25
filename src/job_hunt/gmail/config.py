@@ -1,4 +1,4 @@
-"""Run configuration supplied by the UI rather than committed YAML."""
+"""Gmail run configuration supplied by the UI rather than committed YAML."""
 
 from dataclasses import dataclass, field
 from typing import List, Optional

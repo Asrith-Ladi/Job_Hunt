@@ -1,5 +1,8 @@
 # 018 - Streamlit retirement and manual job intelligence
 
+> 2026-08-17 update: the dated resume destination described below is historical. Generated
+> application documents now use the company-first hierarchy in Discussion 024.
+
 ## Request
 
 Proceed with pending item 7 (retire Streamlit after the React migration) and item 6
@@ -20,8 +23,8 @@ The user approved both actions. They were implemented in this order:
 ## Official-job and eligibility behavior
 
 - Server configuration prefers `OPENAI_API_KEY`/`OPENAI_MODEL`, then the Git-ignored `.env`.
-  The old `.streamlit/secrets.toml` remains a read-only migration fallback so the existing
-  key works without exposing or re-entering it.
+  The old `.streamlit/secrets.toml` fallback was removed during the production package
+  refactor after its supported values were migrated without exposing the key.
 - `gpt-5.6-luna` remains the cost-conscious default.
 - The existing official-job researcher is reused. It sends only allowlisted normalized job
   facts and, when present, a validated official-employer URL hint; alert/source URLs and

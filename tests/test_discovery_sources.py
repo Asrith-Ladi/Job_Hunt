@@ -300,6 +300,74 @@ class DiscoverySourceTests(unittest.TestCase):
         self.assertEqual(len(jobs), 1)
         self.assertEqual(jobs[0].source_type, "official_static_jsonld")
 
+    def test_generic_next_data_extracts_embedded_public_lever_job(self):
+        payload = {
+            "props": {
+                "pageProps": {
+                    "jobs": [
+                        {
+                            "id": "fund-job-id",
+                            "text": "fund settlements",
+                            "categories": {
+                                "location": "bengaluru",
+                                "team": "Kuvera",
+                                "commitment": "full time",
+                            },
+                            "descriptionPlain": "Own fund settlement operations.",
+                            "lists": [
+                                {
+                                    "text": "what we are looking for",
+                                    "content": "<ul><li>5+ years in operations</li></ul>",
+                                }
+                            ],
+                            "urls": {
+                                "show": "https://jobs.lever.co/cred/fund-job-id",
+                                "apply": "https://jobs.lever.co/cred/fund-job-id/apply",
+                            },
+                            "workplaceType": "onsite",
+                        }
+                    ]
+                }
+            }
+        }
+        html = (
+            '<html><script id="__NEXT_DATA__" type="application/json">'
+            + json.dumps(payload)
+            + "</script></html>"
+        )
+        safe, raw = _safe_client(
+            lambda _request: httpx.Response(
+                200,
+                text=html,
+                headers={"content-type": "text/html"},
+            )
+        )
+        try:
+            jobs, strategy, warning = GenericPublicDiscovery(safe).discover(
+                SourceConfig(
+                    company="CRED",
+                    provider="generic",
+                    identifier="",
+                    careers_url="https://careers.cred.club/openings",
+                ),
+                DiscoveryFilters(keyword="fund", location="bengaluru"),
+                discovered_at="2026-08-20T10:00:00+05:30",
+            )
+        finally:
+            raw.close()
+        self.assertEqual(strategy, "embedded_structured_json")
+        self.assertEqual(warning, "")
+        self.assertEqual(len(jobs), 1)
+        self.assertEqual(jobs[0].title, "fund settlements")
+        self.assertEqual(jobs[0].provider, "lever")
+        self.assertEqual(jobs[0].source_identifier, "cred")
+        self.assertEqual(jobs[0].source_type, "official_embedded_ats_json")
+        self.assertEqual(jobs[0].experience_text, "5+ years")
+        self.assertEqual(
+            jobs[0].official_url,
+            "https://jobs.lever.co/cred/fund-job-id",
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -1,6 +1,7 @@
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import httpx
@@ -14,7 +15,7 @@ from job_hunt.discovery.service import (
     DiscoveryRunOptions,
     DiscoveryWorkflowService,
 )
-from job_hunt.gmail_service import AppPaths
+from job_hunt.runtime.paths import AppPaths
 
 
 class _Connection:
@@ -55,6 +56,55 @@ def _entry():
 
 
 class DiscoveryServiceTests(unittest.TestCase):
+    def test_search_returns_current_matches_without_writing_artifacts_or_state(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            paths = AppPaths.from_project_root(root)
+            payload = {
+                "jobs": [
+                    {
+                        "id": 1,
+                        "title": "Machine Learning Engineer",
+                        "absolute_url": "https://boards.greenhouse.io/example/jobs/1",
+                        "location": {"name": "Hyderabad"},
+                        "content": "5-8 years building machine learning systems.",
+                    }
+                ]
+            }
+            raw = httpx.Client(
+                transport=httpx.MockTransport(lambda _request: httpx.Response(200, json=payload)),
+                follow_redirects=False,
+            )
+            repository = SimpleNamespace(load=lambda: SimpleNamespace(entries=[_entry()]))
+            service = DiscoveryWorkflowService(
+                paths,
+                _Connection(),
+                registry_repository=repository,
+                http_client_factory=lambda: SafeHttpClient(
+                    client=raw,
+                    resolver=lambda _host: ["8.8.8.8"],
+                ),
+            )
+            try:
+                result = service.search(
+                    DiscoveryRunOptions(
+                        mode=COMPANY_PORTALS,
+                        company_ids=("company-1",),
+                        filters=DiscoveryFilters(keyword="machine learning"),
+                    )
+                )
+            finally:
+                raw.close()
+
+            self.assertTrue(result["transient"])
+            self.assertEqual(result["file_name"], "")
+            self.assertEqual(result["drive_url"], "")
+            self.assertEqual(len(result["rows"]), 1)
+            self.assertEqual(result["rows"][0]["run_change_status"], "current_result")
+            self.assertEqual(result["summary"]["persistence"], "temporary_search")
+            self.assertFalse((root / "outputs").exists())
+            self.assertFalse(paths.app_state_path.exists())
+
     def test_company_run_save_and_cross_run_incremental_state(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -64,7 +114,7 @@ class DiscoveryServiceTests(unittest.TestCase):
                 project_root=root,
                 run_output_root=root / "outputs" / "gmail_runs",
                 registry_path=registry_path,
-                secrets_root=root / ".secrets",
+                runtime_root=root / ".secrets",
             )
             payload = {
                 "jobs": [

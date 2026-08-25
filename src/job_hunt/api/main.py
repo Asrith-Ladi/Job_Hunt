@@ -1,4 +1,4 @@
-"""FastAPI boundary for the personal React job-hunt interface."""
+"""FastAPI composition root for the React job-hunt application."""
 
 from __future__ import annotations
 
@@ -15,22 +15,20 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, model_validator
 from starlette.middleware.sessions import SessionMiddleware
 
-from job_hunt.gmail_service import (
-    AppPaths,
+from job_hunt.gmail.service import (
     DEFAULT_LOOKBACK_DAYS,
     DEFAULT_MAX_MESSAGES,
     DEFAULT_SOURCE_LABELS,
     GmailRunOptions,
     GmailWorkflowService,
-    GoogleConnectionService,
     service_error_message,
 )
-from job_hunt.network_reviews import (
+from job_hunt.network.service import (
     DEFAULT_TARGET_ROLES,
     MAX_TARGET_ROLES_LENGTH,
     NetworkReviewService,
 )
-from job_hunt.job_intelligence import JobIntelligenceService
+from job_hunt.intelligence.service import JobIntelligenceService
 from job_hunt.discovery.adapters import supported_providers
 from job_hunt.discovery.detection import detect_source
 from job_hunt.discovery.models import DiscoveryFilters, SourceConfig
@@ -41,9 +39,22 @@ from job_hunt.discovery.service import (
     DiscoveryRunOptions,
     DiscoveryWorkflowService,
 )
+from job_hunt.runtime.google import GoogleConnectionService
+from job_hunt.runtime.application_queue import ApplicationQueueService
+from job_hunt.runtime.paths import AppPaths
 
 
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
+def _project_root() -> Path:
+    configured = os.environ.get("JOB_HUNT_PROJECT_ROOT", "").strip()
+    if configured:
+        return Path(configured).expanduser().resolve()
+    for candidate in Path(__file__).resolve().parents:
+        if (candidate / "pyproject.toml").is_file():
+            return candidate
+    return Path.cwd().resolve()
+
+
+PROJECT_ROOT = _project_root()
 
 
 class GmailRunRequest(BaseModel):
@@ -82,8 +93,20 @@ class GmailRunRequest(BaseModel):
         )
 
 
-class GmailRowsUpdate(BaseModel):
-    rows: list[dict[str, Any]]
+class ReferralCandidateRequest(BaseModel):
+    name: str = Field(min_length=1, max_length=500)
+    position: str = Field("", max_length=1000)
+    profile_url: str = Field("", max_length=4096)
+    message: str = Field("", max_length=10_000)
+
+
+class ApplicationUpsertRequest(BaseModel):
+    source: Literal["gmail", "company_portals", "ats_sources"]
+    row: dict[str, Any]
+    referral_candidates: list[ReferralCandidateRequest] = Field(
+        default_factory=list,
+        max_length=100,
+    )
 
 
 class DiscoveryFiltersRequest(BaseModel):
@@ -148,10 +171,6 @@ class DiscoveryRunRequest(BaseModel):
             manual_sources=tuple(item.to_source() for item in self.manual_sources),
             filters=self.filters.to_filters(),
         )
-
-
-class DiscoveryRowsUpdate(BaseModel):
-    rows: list[dict[str, Any]]
 
 
 class SourceDetectionRequest(BaseModel):
@@ -223,6 +242,7 @@ def create_app(
     google_connection: GoogleConnectionService | None = None,
     network_service: NetworkReviewService | None = None,
     job_intelligence_service: JobIntelligenceService | None = None,
+    application_queue_service: ApplicationQueueService | None = None,
     static_dir: Path | None = None,
 ) -> FastAPI:
     paths = AppPaths.from_project_root(PROJECT_ROOT)
@@ -231,10 +251,11 @@ def create_app(
     discovery = discovery_service or DiscoveryWorkflowService(paths, connection)
     network = network_service or NetworkReviewService(paths.registry_path)
     intelligence = job_intelligence_service or JobIntelligenceService(paths, connection)
+    applications = application_queue_service or ApplicationQueueService(paths, connection)
 
     application = FastAPI(
         title="Personal Job Hunt API",
-        version="0.3.0",
+        version="0.4.0",
         docs_url="/api/docs",
         openapi_url="/api/openapi.json",
     )
@@ -273,14 +294,29 @@ def create_app(
     @application.get("/api/registry/companies")
     def registry_companies():
         try:
-            companies = discovery.registry()
+            snapshot = discovery.registry_snapshot()
         except Exception as exc:
             raise _service_http_error(exc) from exc
-        return {
-            "companies": companies,
-            "count": len(companies),
-            "supported_ats_providers": supported_providers(),
-        }
+        snapshot["supported_ats_providers"] = supported_providers()
+        return snapshot
+
+    @application.get("/api/applications")
+    def list_applications():
+        try:
+            return applications.list()
+        except Exception as exc:
+            raise _service_http_error(exc) from exc
+
+    @application.put("/api/applications")
+    def save_application(payload: ApplicationUpsertRequest):
+        try:
+            return applications.upsert(
+                payload.source,
+                payload.row,
+                [candidate.model_dump() for candidate in payload.referral_candidates],
+            )
+        except Exception as exc:
+            raise _service_http_error(exc) from exc
 
     @application.get("/api/network/connections")
     def network_connections(
@@ -325,6 +361,13 @@ def create_app(
     def job_intelligence_status():
         try:
             return intelligence.status()
+        except Exception as exc:
+            raise _service_http_error(exc) from exc
+
+    @application.get("/api/job-intelligence/usage")
+    def job_intelligence_usage(limit: int = Query(20, ge=1, le=100)):
+        try:
+            return intelligence.ai_usage(limit=limit)
         except Exception as exc:
             raise _service_http_error(exc) from exc
 
@@ -453,10 +496,17 @@ def create_app(
             raise _service_http_error(exc) from exc
         return {"run": artifact}
 
-    @application.post("/api/gmail/runs")
-    def create_gmail_run(payload: GmailRunRequest):
+    @application.get("/api/gmail/runs")
+    def list_gmail_runs(limit: int = 50):
         try:
-            return {"run": workflow.run(payload.to_options())}
+            return {"runs": workflow.history(limit=limit)}
+        except Exception as exc:
+            raise _service_http_error(exc) from exc
+
+    @application.post("/api/search/gmail")
+    def search_gmail(payload: GmailRunRequest):
+        try:
+            return {"run": workflow.search(payload.to_options())}
         except Exception as exc:
             raise _service_http_error(exc) from exc
 
@@ -464,13 +514,6 @@ def create_app(
     def get_gmail_run(run_id: str):
         try:
             return {"run": workflow.get(run_id)}
-        except Exception as exc:
-            raise _service_http_error(exc) from exc
-
-    @application.put("/api/gmail/runs/{run_id}/jobs")
-    def update_gmail_run(run_id: str, payload: GmailRowsUpdate):
-        try:
-            return {"run": workflow.save(run_id, payload.rows)}
         except Exception as exc:
             raise _service_http_error(exc) from exc
 
@@ -493,25 +536,15 @@ def create_app(
             raise _service_http_error(exc) from exc
         return {"run": artifact}
 
-    def create_discovery_run(mode: str, payload: DiscoveryRunRequest):
+    def search_discovery(mode: str, payload: DiscoveryRunRequest):
         try:
-            return {"run": discovery.run(payload.to_options(mode))}
+            return {"run": discovery.search(payload.to_options(mode))}
         except Exception as exc:
             raise _service_http_error(exc) from exc
 
     def get_discovery_run(mode: str, run_id: str):
         try:
             return {"run": discovery.get(mode, run_id)}
-        except Exception as exc:
-            raise _service_http_error(exc) from exc
-
-    def update_discovery_run(
-        mode: str,
-        run_id: str,
-        payload: DiscoveryRowsUpdate,
-    ):
-        try:
-            return {"run": discovery.save(mode, run_id, payload.rows)}
         except Exception as exc:
             raise _service_http_error(exc) from exc
 
@@ -530,22 +563,18 @@ def create_app(
     def latest_company_portal_run():
         return latest_discovery_run(COMPANY_PORTALS)
 
-    @application.post("/api/company-portals/runs")
-    def create_company_portal_run(payload: DiscoveryRunRequest):
+    @application.post("/api/search/company-portals")
+    def search_company_portals(payload: DiscoveryRunRequest):
         if payload.manual_sources:
             raise HTTPException(
                 status_code=422,
                 detail="Manual ATS identifiers belong in the ATS Sources tab.",
             )
-        return create_discovery_run(COMPANY_PORTALS, payload)
+        return search_discovery(COMPANY_PORTALS, payload)
 
     @application.get("/api/company-portals/runs/{run_id}")
     def get_company_portal_run(run_id: str):
         return get_discovery_run(COMPANY_PORTALS, run_id)
-
-    @application.put("/api/company-portals/runs/{run_id}/jobs")
-    def update_company_portal_run(run_id: str, payload: DiscoveryRowsUpdate):
-        return update_discovery_run(COMPANY_PORTALS, run_id, payload)
 
     @application.get("/api/company-portals/runs/{run_id}/download")
     def download_company_portal_run(run_id: str):
@@ -555,17 +584,13 @@ def create_app(
     def latest_ats_run():
         return latest_discovery_run(ATS_SOURCES)
 
-    @application.post("/api/ats-sources/runs")
-    def create_ats_run(payload: DiscoveryRunRequest):
-        return create_discovery_run(ATS_SOURCES, payload)
+    @application.post("/api/search/ats-sources")
+    def search_ats_sources(payload: DiscoveryRunRequest):
+        return search_discovery(ATS_SOURCES, payload)
 
     @application.get("/api/ats-sources/runs/{run_id}")
     def get_ats_run(run_id: str):
         return get_discovery_run(ATS_SOURCES, run_id)
-
-    @application.put("/api/ats-sources/runs/{run_id}/jobs")
-    def update_ats_run(run_id: str, payload: DiscoveryRowsUpdate):
-        return update_discovery_run(ATS_SOURCES, run_id, payload)
 
     @application.get("/api/ats-sources/runs/{run_id}/download")
     def download_ats_run(run_id: str):

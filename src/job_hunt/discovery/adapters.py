@@ -173,6 +173,54 @@ class GreenhouseAdapter(AtsAdapter):
         return results
 
 
+def build_lever_job(
+    item: dict[str, Any],
+    source: SourceConfig,
+    filters: DiscoveryFilters,
+    *,
+    discovered_at: str,
+    source_url: str,
+    source_type: str = "official_public_api",
+    posted_at: str = "",
+    updated_at: str = "",
+    date_provenance: str = "unknown",
+) -> DiscoveryJob | None:
+    """Normalize one public Lever-shaped record from an API or employer page."""
+
+    categories = _mapping(item.get("categories"))
+    urls = _mapping(item.get("urls"))
+    description_parts = [item.get("descriptionPlain"), item.get("additionalPlain")]
+    for section in _sequence(item.get("lists")):
+        if isinstance(section, dict):
+            description_parts.extend([section.get("text"), html_to_text(section.get("content"))])
+    official_url = canonical_public_url(item.get("hostedUrl") or urls.get("show"))
+    external_id = clean_text(item.get("id"))
+    if not official_url or not external_id:
+        return None
+    return DiscoveryJob.create(
+        company=source.company,
+        title=clean_text(item.get("text") or item.get("title")),
+        location=clean_text(categories.get("location")),
+        provider="lever",
+        source_identifier=source.identifier,
+        source_type=source_type,
+        external_job_id=external_id,
+        official_url=official_url,
+        apply_url=canonical_public_url(item.get("applyUrl") or urls.get("apply"))
+        or official_url,
+        source_url=source_url,
+        description=" ".join(clean_text(part) for part in description_parts if part),
+        department=clean_text(categories.get("department") or categories.get("team")),
+        employment_type=clean_text(categories.get("commitment")),
+        workplace_type=clean_text(item.get("workplaceType")),
+        posted_at=posted_at,
+        updated_at=updated_at,
+        date_provenance=date_provenance,
+        discovered_at=discovered_at,
+        filters=filters,
+    )
+
+
 class LeverAdapter(AtsAdapter):
     provider = "lever"
     allowed_hosts = {"api.lever.co", "api.eu.lever.co"}
@@ -196,39 +244,14 @@ class LeverAdapter(AtsAdapter):
             page = _sequence(payload)
             for raw in page:
                 item = _mapping(raw)
-                categories = _mapping(item.get("categories"))
-                description_parts = [item.get("descriptionPlain"), item.get("additionalPlain")]
-                for section in _sequence(item.get("lists")):
-                    if isinstance(section, dict):
-                        description_parts.extend(
-                            [section.get("text"), html_to_text(section.get("content"))]
-                        )
-                official_url = canonical_public_url(item.get("hostedUrl"))
-                external_id = clean_text(item.get("id"))
-                if not official_url or not external_id:
-                    continue
-                job = DiscoveryJob.create(
-                    company=source.company,
-                    title=clean_text(item.get("text")),
-                    location=clean_text(categories.get("location")),
-                    provider=self.provider,
-                    source_identifier=source.identifier,
-                    source_type="official_public_api",
-                    external_job_id=external_id,
-                    official_url=official_url,
-                    apply_url=canonical_public_url(item.get("applyUrl")) or official_url,
-                    source_url=page_url,
-                    description=" ".join(clean_text(part) for part in description_parts if part),
-                    department=clean_text(categories.get("department") or categories.get("team")),
-                    employment_type=clean_text(categories.get("commitment")),
-                    workplace_type=clean_text(item.get("workplaceType")),
-                    posted_at="",
-                    updated_at="",
-                    date_provenance="unknown",
+                job = build_lever_job(
+                    item,
+                    source,
+                    filters,
                     discovered_at=discovered_at,
-                    filters=filters,
+                    source_url=page_url,
                 )
-                if job.title and _passes(job, filters):
+                if job is not None and job.title and _passes(job, filters):
                     results.append(job)
                     if len(results) >= filters.max_jobs_per_source:
                         break

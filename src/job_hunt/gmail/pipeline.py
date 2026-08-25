@@ -1,11 +1,11 @@
-"""Manual ingestion orchestration with injectable readers and stores for testing."""
+"""Manual Gmail ingestion orchestration with injectable boundaries for testing."""
 
 import uuid
 from datetime import datetime, timezone
 
-from job_hunt.dedupe import company_match, deduplicate
-from job_hunt.experience import classify_experience_fit
-from job_hunt.models import PipelineResult, RunSummary
+from job_hunt.jobs.dedupe import company_match, deduplicate
+from job_hunt.jobs.experience import classify_experience_fit
+from job_hunt.jobs.models import PipelineResult, RunSummary
 from job_hunt.parsers import select_parser
 
 

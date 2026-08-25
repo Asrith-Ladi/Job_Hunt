@@ -5,10 +5,10 @@ import json
 from collections import Counter
 from pathlib import Path
 
-from job_hunt.config import RunConfig
+from job_hunt.gmail.config import RunConfig
 from job_hunt.integrations.gmail import GoogleGmailReader
 from job_hunt.integrations.google_auth import load_stored_credentials
-from job_hunt.pipeline import run_pipeline
+from job_hunt.gmail.pipeline import run_pipeline
 
 
 DEFAULT_QUERY = (

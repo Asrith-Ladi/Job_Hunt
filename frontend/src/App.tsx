@@ -9,9 +9,12 @@ import type {
   CompanyRegistryEntry,
   DiscoveryFiltersSettings,
   DiscoveryRunArtifact,
+  GmailRunHistoryEntry,
   GoogleStatus,
+  RegistryStatus,
   RunArtifact,
   RunSettings,
+  SavedApplication,
   Scalar,
 } from "./types";
 import {
@@ -84,12 +87,16 @@ function App() {
   const [config, setConfig] = useState<AppConfig | null>(null);
   const [google, setGoogle] = useState<GoogleStatus | null>(null);
   const [registry, setRegistry] = useState<CompanyRegistryEntry[]>([]);
+  const [registryStatus, setRegistryStatus] = useState<RegistryStatus | null>(null);
+  const [refreshingRegistry, setRefreshingRegistry] = useState(false);
   const [setup, setSetup] = useState<RunSetupState>(EMPTY_SETUP);
   const [runs, setRuns] = useState<WorkspaceRuns>(EMPTY_RUNS);
-  const [dirtySources, setDirtySources] = useState<Set<WorkspaceSource>>(new Set());
+  const [savedApplications, setSavedApplications] = useState<SavedApplication[]>([]);
+  const [gmailHistory, setGmailHistory] = useState<GmailRunHistoryEntry[]>([]);
+  const [loadingHistoryRunId, setLoadingHistoryRunId] = useState("");
   const [runningSource, setRunningSource] = useState<WorkspaceSource | "">("");
   const [outcomes, setOutcomes] = useState<Partial<Record<WorkspaceSource, SourceOutcome>>>({});
-  const [saving, setSaving] = useState(false);
+  const [savingJobIds, setSavingJobIds] = useState<Set<string>>(new Set());
   const [selectedJob, setSelectedJob] = useState<QueueItem | null>(null);
   const [notice, setNotice] = useState<Notice | null>(null);
   const [loading, setLoading] = useState(true);
@@ -136,31 +143,41 @@ function App() {
         const startupResults = await Promise.allSettled([
           api.googleStatus(),
           api.registry(),
-          api.latestRun(),
-          api.latestDiscoveryRun("company_portals"),
-          api.latestDiscoveryRun("ats_sources"),
+          api.gmailRunHistory(),
+          api.applications(),
         ] as const);
-        const [googleResult, registryResult, gmailResult, companyResult, atsResult] = startupResults;
+        const [
+          googleResult,
+          registryResult,
+          gmailHistoryResult,
+          applicationsResult,
+        ] = startupResults;
         if (googleResult.status === "fulfilled") setGoogle(googleResult.value);
-        if (registryResult.status === "fulfilled") setRegistry(registryResult.value.companies);
-        setRuns({
-          gmail: gmailResult.status === "fulfilled" ? gmailResult.value.run : null,
-          company_portals: companyResult.status === "fulfilled" ? companyResult.value.run : null,
-          ats_sources: atsResult.status === "fulfilled" ? atsResult.value.run : null,
-        });
+        if (registryResult.status === "fulfilled") {
+          setRegistry(registryResult.value.companies);
+          setRegistryStatus(registryResult.value.registry_status);
+        }
+        if (gmailHistoryResult.status === "fulfilled") setGmailHistory(gmailHistoryResult.value.runs);
+        if (applicationsResult.status === "fulfilled") {
+          setSavedApplications(applicationsResult.value.applications);
+        }
 
         const unavailable = [
           googleResult.status === "rejected" ? "Google status" : "",
           registryResult.status === "rejected" ? "company registry" : "",
-          gmailResult.status === "rejected" ? "Gmail run" : "",
-          companyResult.status === "rejected" ? "Company Portal run" : "",
-          atsResult.status === "rejected" ? "ATS run" : "",
+          gmailHistoryResult.status === "rejected" ? "Gmail run history" : "",
+          applicationsResult.status === "rejected" ? "saved applications" : "",
         ].filter(Boolean);
         if (unavailable.length) {
           setNotice({
             kind: "info",
             text: `${unavailable.join(", ")} could not be loaded. The available workspace remains usable.`,
           });
+        } else if (
+          registryResult.status === "fulfilled"
+          && registryResult.value.registry_status.warning
+        ) {
+          setNotice({ kind: "info", text: registryResult.value.registry_status.warning });
         }
       })
       .catch((error: Error) => {
@@ -169,8 +186,14 @@ function App() {
       .finally(() => setLoading(false));
   }, []);
 
-  const queueCount = useMemo(() => flattenRuns(runs).length, [runs]);
-  const currentRunCount = useMemo(() => Object.values(runs).filter(Boolean).length, [runs]);
+  const queueCount = useMemo(
+    () => flattenRuns(runs, savedApplications).length,
+    [runs, savedApplications],
+  );
+  const currentSearchCount = useMemo(
+    () => Object.values(runs).filter((run) => run?.transient).length,
+    [runs],
+  );
 
   const navigateTo = (tab: ProductTab) => {
     setActiveTab(tab);
@@ -190,13 +213,37 @@ function App() {
     }
   };
 
+  const refreshRegistry = async () => {
+    setRefreshingRegistry(true);
+    try {
+      const response = await api.registry();
+      const validIds = new Set(response.companies.map((company) => company.company_id));
+      setRegistry(response.companies);
+      setRegistryStatus(response.registry_status);
+      setSetup((current) => ({
+        ...current,
+        companyIds: current.companyIds.filter((companyId) => validIds.has(companyId)),
+        atsCompanyIds: current.atsCompanyIds.filter((companyId) => validIds.has(companyId)),
+      }));
+      setNotice({
+        kind: response.registry_status.warning ? "info" : "success",
+        text: response.registry_status.warning
+          || `Company registry refreshed from Drive (${response.count} companies).`,
+      });
+    } catch (error) {
+      setNotice({ kind: "error", text: (error as Error).message });
+    } finally {
+      setRefreshingRegistry(false);
+    }
+  };
+
   const validateSetup = (): string => {
-    if (!setup.enabledSources.length) return "Select at least one source to run.";
+    if (!setup.enabledSources.length) return "Select at least one source to search.";
     if (setup.enabledSources.includes("gmail") && !setup.gmail.sources.length) {
       return "Choose LinkedIn, Naukri, or both for the Gmail source.";
     }
     if (setup.enabledSources.includes("company_portals") && !setup.companyIds.length) {
-      return "Select at least one company for the Company Portal run.";
+      return "Select at least one company for the Company Portal search.";
     }
     if (
       setup.enabledSources.includes("ats_sources")
@@ -217,50 +264,37 @@ function App() {
       return;
     }
     if (!google?.connected) {
-      setNotice({ kind: "error", text: "Connect Google before creating Drive run artifacts." });
+      setNotice({ kind: "error", text: "Connect Google before reading Gmail or the Drive company registry." });
       return;
     }
-    const dirtySelected = setup.enabledSources.some((source) => dirtySources.has(source));
-    if (dirtySelected && !window.confirm("Running selected sources will replace their unsaved on-screen edits. Continue?")) return;
 
     const succeeded: WorkspaceSource[] = [];
     const failed: WorkspaceSource[] = [];
-    setNotice({ kind: "info", text: "Running each selected source independently and preserving completed results…" });
+    setNotice({ kind: "info", text: "Searching each selected source independently. Results stay temporary until you save or update a job." });
 
     for (const source of setup.enabledSources) {
       setRunningSource(source);
-      setOutcomes((current) => ({ ...current, [source]: { status: "running", message: "Running" } }));
+      setOutcomes((current) => ({ ...current, [source]: { status: "running", message: "Searching" } }));
       try {
         let run: RunArtifact | DiscoveryRunArtifact;
         if (source === "gmail") {
-          run = (await api.runGmail(setup.gmail)).run;
+          run = (await api.searchGmail(setup.gmail)).run;
         } else if (source === "company_portals") {
-          run = (await api.runDiscovery(source, setup.companyIds, [], setup.discovery)).run;
+          run = (await api.searchDiscovery(source, setup.companyIds, [], setup.discovery)).run;
         } else {
-          run = (await api.runDiscovery(source, setup.atsCompanyIds, setup.manualAtsSources, setup.discovery)).run;
+          run = (await api.searchDiscovery(source, setup.atsCompanyIds, setup.manualAtsSources, setup.discovery)).run;
         }
         setRuns((current) => ({ ...current, [source]: run }));
-        setDirtySources((current) => {
-          const next = new Set(current);
-          next.delete(source);
-          return next;
-        });
         succeeded.push(source);
         const currentMatches = summaryNumber(
           run.summary.jobs_after_deduplication,
-          run.rows.length,
-        );
-        const newOrChanged = summaryNumber(
-          run.summary.jobs_new_or_changed_this_run,
           run.rows.length,
         );
         setOutcomes((current) => ({
           ...current,
           [source]: {
             status: "success",
-            message: source === "gmail"
-              ? `${run.rows.length} rows ready`
-              : `${currentMatches} matches · ${newOrChanged} new/changed`,
+            message: `${currentMatches} temporary match${currentMatches === 1 ? "" : "es"}`,
           },
         }));
       } catch (error) {
@@ -277,7 +311,7 @@ function App() {
       navigateTo("job_queue");
       setNotice({
         kind: failed.length ? "info" : "success",
-        text: `${succeeded.map((source) => SOURCE_LABELS[source]).join(", ")} completed${failed.length ? `; ${failed.map((source) => SOURCE_LABELS[source]).join(", ")} needs attention.` : ". The unified queue is ready."}`,
+        text: `${succeeded.map((source) => SOURCE_LABELS[source]).join(", ")} search completed${failed.length ? `; ${failed.map((source) => SOURCE_LABELS[source]).join(", ")} needs attention.` : ". Results are temporary until you save or update a job."}`,
       });
     } else {
       setNotice({ kind: "error", text: "No selected source completed. Review each source message and try again." });
@@ -297,39 +331,67 @@ function App() {
       });
       return { ...current, [item.source]: { ...run, rows: nextRows } };
     });
-    setDirtySources((current) => new Set(current).add(item.source));
+    if (item.applicationId) {
+      setSavedApplications((current) => current.map((application) => (
+        application.application_id === item.applicationId
+          ? { ...application, row: { ...application.row, [column]: value } }
+          : application
+      )));
+    }
+    setSelectedJob((current) => current?.id === item.id
+      ? { ...current, row: { ...current.row, [column]: value } }
+      : current);
   };
 
-  const saveChangedSources = async () => {
-    if (!dirtySources.size) return;
-    setSaving(true);
-    const saved: WorkspaceSource[] = [];
-    const failed: WorkspaceSource[] = [];
-    for (const source of Array.from(dirtySources)) {
-      const run = runs[source];
-      if (!run) continue;
-      try {
-        const next = source === "gmail"
-          ? (await api.saveRows(run.run_id, run.rows)).run
-          : (await api.saveDiscoveryRows(source, run.run_id, run.rows)).run;
-        setRuns((current) => ({ ...current, [source]: next }));
-        saved.push(source);
-      } catch {
-        failed.push(source);
-      }
+  const persistQueueRow = async (item: QueueItem, column: string, value: Scalar) => {
+    const nextRow = { ...item.row, [column]: value };
+    updateQueueRow(item, column, value);
+    setSavingJobIds((current) => new Set(current).add(item.id));
+    try {
+      const response = await api.saveApplication(item.source, nextRow, item.referralCandidates);
+      setSavedApplications((current) => [
+        response.application,
+        ...current.filter(
+          (application) => application.application_id !== response.application.application_id,
+        ),
+      ]);
+      setNotice({
+        kind: "success",
+        text: column === "application_status"
+          ? "Application status saved permanently in Drive."
+          : "Job changes saved permanently in Drive.",
+      });
+    } catch (error) {
+      setNotice({
+        kind: "error",
+        text: `The job remains on screen but was not saved: ${(error as Error).message}`,
+      });
+    } finally {
+      setSavingJobIds((current) => {
+        const next = new Set(current);
+        next.delete(item.id);
+        return next;
+      });
     }
-    setDirtySources((current) => {
-      const next = new Set(current);
-      saved.forEach((source) => next.delete(source));
-      return next;
-    });
-    setSaving(false);
-    setNotice({
-      kind: failed.length ? "info" : "success",
-      text: failed.length
-        ? `${saved.length} source workbook${saved.length === 1 ? "" : "s"} saved; ${failed.map((source) => SOURCE_LABELS[source]).join(", ")} could not be updated.`
-        : `${saved.length} source workbook${saved.length === 1 ? "" : "s"} updated locally and in Drive.`,
-    });
+  };
+
+  const loadHistoricalGmailRun = async (runId: string) => {
+    setLoadingHistoryRunId(runId);
+    try {
+      const historical = (await api.gmailRun(runId)).run;
+      setRuns((current) => ({ ...current, gmail: historical }));
+      navigateTo("job_queue");
+      setNotice({
+        kind: "success",
+        text: historical.historical
+          ? `${historical.file_name} loaded for review. New status and note changes save to the canonical application queue.`
+          : `${historical.file_name} restored as the current Gmail run.`,
+      });
+    } catch (error) {
+      setNotice({ kind: "error", text: (error as Error).message });
+    } finally {
+      setLoadingHistoryRunId("");
+    }
   };
 
   if (loading) {
@@ -364,10 +426,10 @@ function App() {
 
         <nav className="product-nav" aria-label="Primary navigation">
           <button className={activeTab === "run_setup" ? "active" : ""} type="button" onClick={() => navigateTo("run_setup")}>
-            <span className="nav-index">01</span><span><strong>Run Setup</strong><small>Choose and configure sources</small></span>
+            <span className="nav-index">01</span><span><strong>Search</strong><small>Choose sources and search criteria</small></span>
           </button>
           <button className={activeTab === "job_queue" ? "active" : ""} type="button" onClick={() => navigateTo("job_queue")}>
-            <span className="nav-index">02</span><span><strong>Job Queue</strong><small>{queueCount ? `${queueCount} source records` : "Unified review workspace"}</small></span>
+            <span className="nav-index">02</span><span><strong>Results</strong><small>{queueCount ? `${queueCount} searchable records` : "Review and track applications"}</small></span>
           </button>
           <button className={activeTab === "network_reviews" ? "active" : ""} type="button" onClick={() => navigateTo("network_reviews")}>
             <span className="nav-index">03</span><span><strong>Network</strong><small>Reviewers and referral context</small></span>
@@ -376,9 +438,9 @@ function App() {
 
         <div className="sidebar-run-status">
           <small>Current workspace</small>
-          <strong>{currentRunCount} source run{currentRunCount === 1 ? "" : "s"}</strong>
-          <span>{queueCount} preserved job record{queueCount === 1 ? "" : "s"}</span>
-          <button type="button" onClick={() => navigateTo("run_setup")}>Start another focused run →</button>
+          <strong>{currentSearchCount} active search{currentSearchCount === 1 ? "" : "es"}</strong>
+          <span>{savedApplications.length} permanently saved job{savedApplications.length === 1 ? "" : "s"}</span>
+          <button type="button" onClick={() => navigateTo("run_setup")}>Start another search →</button>
         </div>
 
         <div className={`sidebar-connection ${google?.connected ? "connected" : "disconnected"}`}>
@@ -392,7 +454,7 @@ function App() {
         <header className="content-topbar">
           <div>
             <p className="eyebrow">{activeTab === "run_setup" ? "Discovery control" : activeTab === "job_queue" ? "Daily application workflow" : "Offline LinkedIn export"}</p>
-            <strong>{activeTab === "run_setup" ? "Run Setup" : activeTab === "job_queue" ? "Job Queue" : "Network Reviews"}</strong>
+            <strong>{activeTab === "run_setup" ? "Search" : activeTab === "job_queue" ? "Results & Applications" : "Network Reviews"}</strong>
           </div>
           <div className="topbar-actions">
             <span className="privacy-pill">Private · manual actions only</span>
@@ -418,10 +480,13 @@ function App() {
             config={config}
             googleConnected={Boolean(google?.connected)}
             registry={registry}
+            registryStatus={registryStatus}
+            refreshingRegistry={refreshingRegistry}
             value={setup}
             onChange={setSetup}
             onRun={runSelectedSources}
             onConnectGoogle={connectGoogle}
+            onRefreshRegistry={refreshRegistry}
             runningSource={runningSource}
             outcomes={outcomes}
           />
@@ -429,11 +494,14 @@ function App() {
           <JobQueueTab
             config={config}
             runs={runs}
-            dirtySources={dirtySources}
-            saving={saving}
-            onSave={saveChangedSources}
+            savedApplications={savedApplications}
+            gmailHistory={gmailHistory}
+            loadingHistoryRunId={loadingHistoryRunId}
             onUpdate={updateQueueRow}
+            onPersist={persistQueueRow}
+            savingJobIds={savingJobIds}
             onOpenJob={setSelectedJob}
+            onLoadGmailRun={loadHistoricalGmailRun}
             onGoToSetup={() => navigateTo("run_setup")}
             onNotice={(text) => setNotice({ kind: "success", text })}
           />
@@ -448,7 +516,7 @@ function App() {
           googleConnected={Boolean(google?.connected)}
           onClose={() => setSelectedJob(null)}
           onOfficialUrl={(url) => {
-            updateQueueRow(selectedJob, "official_url", url);
+            void persistQueueRow(selectedJob, "official_url", url);
             setSelectedJob((current) => current ? { ...current, row: { ...current.row, official_url: url } } : null);
           }}
         />

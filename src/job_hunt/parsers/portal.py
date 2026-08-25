@@ -2,9 +2,9 @@
 
 from urllib.parse import urlsplit
 
-from job_hunt.dedupe import canonicalize_url, stable_record_id
-from job_hunt.experience import extract_experience_range
-from job_hunt.models import JobRecord, ParseResult
+from job_hunt.jobs.dedupe import canonicalize_url, stable_record_id
+from job_hunt.jobs.experience import extract_experience_range
+from job_hunt.jobs.models import JobRecord, ParseResult
 from job_hunt.parsers.base import AlertParser
 from job_hunt.parsers.html_links import extract_links
 

@@ -1,7 +1,7 @@
 import unittest
 
-from job_hunt.dedupe import canonicalize_url, company_match, deduplicate
-from job_hunt.models import JobRecord
+from job_hunt.jobs.dedupe import canonicalize_url, company_match, deduplicate
+from job_hunt.jobs.models import JobRecord
 
 
 def _job(record_id, url, message_id="m1", title=None):

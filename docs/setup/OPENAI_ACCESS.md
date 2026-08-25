@@ -12,7 +12,7 @@ For the current PowerShell window:
 cd D:\Projects\job_hunt
 $env:OPENAI_API_KEY = "replace-with-your-project-api-key"
 $env:OPENAI_MODEL = "gpt-5.6-luna"
-.\.venv\Scripts\python.exe -m uvicorn backend.main:app --host 127.0.0.1 --port 8000
+.\.venv\Scripts\python.exe -m uvicorn job_hunt.api.main:app --host 127.0.0.1 --port 8000
 ```
 
 For Command Prompt:
@@ -21,27 +21,27 @@ For Command Prompt:
 cd /d D:\Projects\job_hunt
 set OPENAI_API_KEY=replace-with-your-project-api-key
 set OPENAI_MODEL=gpt-5.6-luna
-.venv\Scripts\python.exe -m uvicorn backend.main:app --host 127.0.0.1 --port 8000
+.venv\Scripts\python.exe -m uvicorn job_hunt.api.main:app --host 127.0.0.1 --port 8000
 ```
 
 Alternatively, copy `.env.example` to the Git-ignored `.env` file and replace only the
 placeholder values. Environment variables have priority over `.env`. For an internet
 deployment, use the host's encrypted secret manager instead of uploading `.env`.
 
-The retired `.streamlit/secrets.toml` file is still read as a migration fallback, so the
-existing local key continues to work. Do not use that location for new deployments.
+The retired `.streamlit/secrets.toml` location is not read by the production application.
+Use the process environment for deployment and the Git-ignored `.env` only for local use.
 
 ## Baseline resume
 
-The private React job tool can upload a Word `.docx` baseline. It is validated and stored
-as `.secrets/base_resume.docx`, which is Git-ignored. A deployment may instead set:
+The private React job tool uploads an immutable Word `.docx` baseline to the app-owned Drive
+Resume Library. A temporary validated server cache is stored below `JOB_HUNT_RUNTIME_DIR`
+(`.secrets` locally); it is not the authoritative input. Generated documents are also
+uploaded to the approved Drive application folder.
 
-```powershell
-$env:JOB_HUNT_BASE_RESUME = "C:\private\Asrith_Ladi_AI_ML_Engineer.docx"
-```
-
-Persistent private storage is required before deploying because the API key, Google token,
-research cache, baseline resume, generated drafts, and resume index must survive restarts.
+Persistent encrypted runtime storage is still required before deploying because the Google
+token, OAuth state, research/plan cache, usage ledger mirror, and temporary resume cache must
+survive or be safely reconstructed after restarts. The OpenAI key belongs in the host's
+secret manager, not Drive or the runtime cache.
 
 ## Manual actions and cost boundary
 

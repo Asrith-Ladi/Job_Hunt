@@ -1,10 +1,10 @@
 """Truth-preserving tailoring of a private baseline resume DOCX.
 
-The OpenAI planner may write a new professional summary and rank existing evidence,
-but it never receives or rewrites contact details. The DOCX editor preserves the
-original package and formatting, changes one summary paragraph, reorders existing
-skill and experience-bullet paragraphs, and may add one deterministic Skills line
-containing only user-confirmed exact JD keywords.
+The OpenAI planner may write a new professional summary, rank existing evidence, and
+propose validated meaning-preserving experience-bullet rewrites, but it never receives
+or rewrites contact details. The DOCX editor preserves the original package and formatting,
+places evidence-backed JD terms in relevant skill categories, and changes only content
+approved by the deterministic validation plan.
 """
 
 from __future__ import annotations
@@ -17,8 +17,10 @@ import tempfile
 import zipfile
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any, Iterable, Mapping
 from xml.etree import ElementTree
+
+from job_hunt.jobs.skills import skill_placement
 
 
 WORD_NAMESPACE = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
@@ -151,6 +153,13 @@ def resume_sha256(path: Path) -> str:
         for block in iter(lambda: handle.read(1024 * 1024), b""):
             digest.update(block)
     return digest.hexdigest()
+
+
+def extract_resume_text(path: Path) -> str:
+    """Return the visible main-document text for deterministic local matching."""
+
+    root, _document_xml = _read_document(path)
+    return "\n".join(record.text for record in _records(root))
 
 
 def _records(root: ElementTree.Element) -> list[_ParagraphRecord]:
@@ -360,39 +369,123 @@ def _reorder_contiguous(records: list[_ParagraphRecord], requested: Iterable[obj
         parent.insert(insertion_index + offset, by_id[item_id])
 
 
-def _confirmed_skill_line(values: Iterable[object]) -> str:
-    skills: list[str] = []
-    normalized: set[str] = set()
-    for value in list(values or [])[:20]:
-        skill = re.sub(r"\s+", " ", str(value or "").strip())[:120]
-        key = _normalized(skill)
-        if not skill or key in normalized:
-            continue
-        if any(pattern.search(skill) for pattern in _DIRECT_CONTACT):
-            raise ResumeTemplateError("A confirmed skill contained contact information.")
-        if re.search(r"\[[A-Z][A-Z0-9_ -]+\]|\{\{.+?\}\}", skill):
-            raise ResumeTemplateError("A confirmed skill contained an unresolved placeholder.")
-        normalized.add(key)
-        skills.append(skill)
-    return f"Additional Skills: {', '.join(skills)}" if skills else ""
+def _skill_is_present(line: str, skill: str) -> bool:
+    normalized_line = f" {_normalized(re.sub(r'[^a-zA-Z0-9+#.]+', ' ', line))} "
+    normalized_skill = _normalized(re.sub(r"[^a-zA-Z0-9+#.]+", " ", skill))
+    return bool(normalized_skill and f" {normalized_skill} " in normalized_line)
 
 
-def _append_confirmed_skills(
-    structure: _ResumeStructure,
-    values: Iterable[object],
-) -> str:
-    line = _confirmed_skill_line(values)
-    if not line:
+def _safe_skill_addition(value: object) -> str:
+    skill = re.sub(r"\s+", " ", str(value or "").strip())[:120]
+    if not skill:
         return ""
-    parent = structure.skills[0].parent
-    if any(record.parent is not parent for record in structure.skills):
+    if any(pattern.search(skill) for pattern in _DIRECT_CONTACT):
+        raise ResumeTemplateError("A tailored skill contained contact information.")
+    if re.search(r"\[[A-Z][A-Z0-9_ -]+\]|\{\{.+?\}\}", skill):
+        raise ResumeTemplateError("A tailored skill contained an unresolved placeholder.")
+    return skill
+
+
+def _safe_skill_category(value: object) -> str:
+    category = re.sub(r"\s+", " ", str(value or "").strip().rstrip(":"))[:80]
+    if not category or any(pattern.search(category) for pattern in _DIRECT_CONTACT):
+        raise ResumeTemplateError("A tailored skill category was invalid.")
+    if not re.fullmatch(r"[A-Za-z0-9 &/+.-]+", category):
+        raise ResumeTemplateError("A tailored skill category contained unsupported characters.")
+    return category
+
+
+def _prepared_skill_additions(
+    skill_items: list[dict[str, str]],
+    plan: Mapping[str, Any],
+) -> list[dict[str, str]]:
+    raw_values = [
+        dict(item)
+        for item in plan.get("skill_additions") or []
+        if isinstance(item, Mapping)
+    ]
+    if not raw_values:
+        raw_values = [
+            skill_placement(value, skill_items)
+            for value in plan.get("confirmed_skills") or []
+        ]
+    allowed_ids = {item["id"] for item in skill_items}
+    result: list[dict[str, str]] = []
+    seen: set[str] = set()
+    for raw in raw_values[:40]:
+        skill = _safe_skill_addition(raw.get("skill"))
+        key = _normalized(skill)
+        if not skill or key in seen:
+            continue
+        target_id = str(raw.get("target_skill_id") or "").strip()
+        if target_id not in allowed_ids:
+            target_id = ""
+        fallback = skill_placement(skill, skill_items)
+        category = _safe_skill_category(raw.get("category") or fallback["category"])
+        if not target_id:
+            target_id = str(fallback.get("target_skill_id") or "")
+        seen.add(key)
+        result.append(
+            {
+                "skill": skill,
+                "target_skill_id": target_id,
+                "category": category,
+            }
+        )
+    return result
+
+
+def _skill_lines_after_additions(
+    skill_items: list[dict[str, str]],
+    additions: list[dict[str, str]],
+) -> list[str]:
+    lines = {item["id"]: item["text"] for item in skill_items}
+    new_categories: dict[str, list[str]] = {}
+    for addition in additions:
+        skill = addition["skill"]
+        target_id = addition["target_skill_id"]
+        if target_id in lines:
+            if not _skill_is_present(lines[target_id], skill):
+                lines[target_id] = f"{lines[target_id].rstrip(' ,;')}, {skill}"
+            continue
+        category = addition["category"]
+        values = new_categories.setdefault(category, [])
+        if not any(_normalized(value) == _normalized(skill) for value in values):
+            values.append(skill)
+    result = [lines[item["id"]] for item in skill_items]
+    result.extend(
+        f"{category}: {', '.join(values)}"
+        for category, values in new_categories.items()
+        if values
+    )
+    return result
+
+
+def _apply_skill_additions(
+    structure: _ResumeStructure,
+    plan: Mapping[str, Any],
+) -> list[str]:
+    if any(record.parent is not structure.skills[0].parent for record in structure.skills):
         raise ResumeTemplateError("The Technical Skills block crosses unsupported containers.")
-    clone = copy.deepcopy(structure.skills[-1].element)
-    _replace_paragraph_text(clone, line)
+    items = [
+        {"id": record.item_id, "text": record.text}
+        for record in structure.skills
+    ]
+    additions = _prepared_skill_additions(items, plan)
+    expected = _skill_lines_after_additions(items, additions)
+    existing_count = len(structure.skills)
+    for record, text in zip(structure.skills, expected[:existing_count]):
+        if record.text != text:
+            _replace_paragraph_text(record.element, text)
+
+    parent = structure.skills[0].parent
     children = list(parent)
     insertion_index = max(children.index(record.element) for record in structure.skills) + 1
-    parent.insert(insertion_index, clone)
-    return line
+    for offset, text in enumerate(expected[existing_count:]):
+        clone = copy.deepcopy(structure.skills[-1].element)
+        _replace_paragraph_text(clone, text)
+        parent.insert(insertion_index + offset, clone)
+    return expected
 
 
 def _serialize_document(
@@ -434,7 +527,7 @@ def _serialize_document(
 
 
 def tailor_resume_docx(base_path: Path, output_path: Path, plan: dict[str, Any]) -> Path:
-    """Apply a validated ranking plan to a copy of the baseline DOCX."""
+    """Apply a validated, evidence-grounded tailoring plan to a baseline copy."""
 
     base_path = validate_resume_docx(base_path)
     root, original_document_xml = _read_document(base_path)
@@ -444,7 +537,7 @@ def tailor_resume_docx(base_path: Path, output_path: Path, plan: dict[str, Any])
         raise ResumeTemplateError("A tailored professional summary is required.")
     _replace_paragraph_text(structure.summary.element, summary)
     _reorder_contiguous(structure.skills, plan.get("skill_order") or [])
-    _append_confirmed_skills(structure, plan.get("confirmed_skills") or [])
+    _apply_skill_additions(structure, plan)
 
     requested_sections = {
         str(item.get("section_id") or ""): item
@@ -454,6 +547,15 @@ def tailor_resume_docx(base_path: Path, output_path: Path, plan: dict[str, Any])
     for section in structure.experience_sections:
         request = requested_sections.get(section["section_id"], {})
         _reorder_contiguous(section["bullets"], request.get("bullet_order") or [])
+        rewrites = {
+            str(item.get("bullet_id") or ""): str(item.get("text") or "").strip()
+            for item in request.get("bullet_rewrites") or []
+            if isinstance(item, Mapping)
+        }
+        for record in section["bullets"]:
+            rewritten = re.sub(r"\s+", " ", rewrites.get(record.item_id, "")).strip()
+            if rewritten:
+                _replace_paragraph_text(record.element, rewritten)
 
     output_path = Path(output_path).resolve()
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -498,21 +600,41 @@ def verify_tailored_resume(
     if candidate_evidence["current_summary"] != expected_summary:
         raise ResumeTemplateError("The tailored summary was not written correctly.")
 
-    base_skills = sorted(item["text"] for item in base_evidence["skills"])
+    base_skill_items = [
+        {"id": str(item["id"]), "text": str(item["text"])}
+        for item in base_evidence["skills"]
+    ]
+    additions = _prepared_skill_additions(base_skill_items, plan)
+    base_skills = sorted(_skill_lines_after_additions(base_skill_items, additions))
     candidate_skills = sorted(item["text"] for item in candidate_evidence["skills"])
-    expected_skill_line = _confirmed_skill_line(plan.get("confirmed_skills") or [])
-    expected_skills = sorted(base_skills + ([expected_skill_line] if expected_skill_line else []))
-    if candidate_skills != expected_skills:
+    if candidate_skills != base_skills:
         raise ResumeTemplateError("Tailoring changed or added unconfirmed resume skills.")
 
-    def experience_texts(value: dict[str, Any]) -> list[str]:
-        return sorted(
-            item["text"]
-            for section in value["experience_sections"]
+    requested_sections = {
+        str(item.get("section_id") or ""): item
+        for item in plan.get("experience_sections") or []
+        if isinstance(item, Mapping)
+    }
+    expected_bullets: list[str] = []
+    for section in base_evidence["experience_sections"]:
+        request = requested_sections.get(str(section.get("section_id") or ""), {})
+        rewrites = {
+            str(item.get("bullet_id") or ""): re.sub(
+                r"\s+", " ", str(item.get("text") or "").strip()
+            )
+            for item in request.get("bullet_rewrites") or []
+            if isinstance(item, Mapping)
+        }
+        expected_bullets.extend(
+            rewrites.get(str(item.get("id") or ""), str(item.get("text") or ""))
             for item in section["bullets"]
         )
-
-    if experience_texts(base_evidence) != experience_texts(candidate_evidence):
-        raise ResumeTemplateError("Tailoring changed or removed verified work evidence.")
+    candidate_bullets = [
+        str(item["text"])
+        for section in candidate_evidence["experience_sections"]
+        for item in section["bullets"]
+    ]
+    if sorted(expected_bullets) != sorted(candidate_bullets):
+        raise ResumeTemplateError("Tailoring changed work evidence outside the validated plan.")
     if re.search(r"\[[A-Z][A-Z0-9_ -]+\]|\{\{.+?\}\}", expected_summary):
         raise ResumeTemplateError("The tailored resume contains an unresolved placeholder.")

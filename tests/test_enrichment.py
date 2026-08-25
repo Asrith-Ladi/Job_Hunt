@@ -2,7 +2,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from job_hunt.enrichment import (
+from job_hunt.jobs.enrichment import (
     Connection,
     ResumeProfile,
     canonical_company,
@@ -77,6 +77,27 @@ class EnrichmentTests(unittest.TestCase):
         self.assertEqual(result["missing_skills"], ["Healthcare"])
         self.assertTrue(any("healthcare" in item.lower() for item in result["gaps"]))
         self.assertIn("Experience 30/30", result["components"])
+
+    def test_official_eligibility_distinguishes_equivalent_from_exact_wording(self):
+        profile = ResumeProfile(
+            years_experience=5.8,
+            skills=frozenset({"LLMs", "LangGraph", "Python"}),
+            evidence=("Built agentic systems using LangGraph and LLMs.",),
+        )
+        posting = {
+            "title": "Agent Engineer",
+            "required_skills": ["LLMs and agents", "Technical ownership"],
+            "active_status": "active",
+        }
+
+        result = score_official_posting(posting, profile)
+
+        self.assertEqual(result["equivalent_matched_skills"], ["LLMs and agents"])
+        self.assertEqual(result["missing_skills"], ["Technical ownership"])
+        self.assertEqual(
+            result["skill_match_evidence"]["LLMs and agents"]["match_type"],
+            "equivalent",
+        )
 
     def test_alert_only_score_is_capped_and_low_confidence(self):
         profile = ResumeProfile(5.8, frozenset({"Python"}), ("Evidence",))

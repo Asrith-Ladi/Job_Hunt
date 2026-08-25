@@ -46,7 +46,10 @@ def _find_child(drive_service, name: str, parent_id: str | None, mime_type: str)
         .list(
             q=" and ".join(clauses),
             spaces="drive",
-            fields="files(id,name,mimeType,parents,webViewLink)",
+            fields=(
+                "files(id,name,mimeType,parents,webViewLink,modifiedTime,"
+                "md5Checksum,size)"
+            ),
             pageSize=10,
         )
         .execute()

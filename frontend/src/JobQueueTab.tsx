@@ -1,6 +1,6 @@
 import { useMemo, useState } from "react";
 import { api } from "./api";
-import type { AppConfig, JobRow, Scalar } from "./types";
+import type { AppConfig, GmailRunHistoryEntry, JobRow, SavedApplication, Scalar } from "./types";
 import {
   SOURCE_LABELS,
   flattenRuns,
@@ -16,13 +16,26 @@ import {
   type WorkspaceSource,
 } from "./workspace";
 
-type QueueView = "all" | "possible" | "needs_official" | "official_ready" | "applied";
+type QueueView = "all" | "saved" | "possible" | "needs_official" | "official_ready" | "applied";
 
 function readableDate(value: string): string {
   if (!value) return "Date unavailable";
   const parsed = new Date(value);
   if (Number.isNaN(parsed.getTime())) return value;
   return new Intl.DateTimeFormat(undefined, { day: "2-digit", month: "short", year: "numeric" }).format(parsed);
+}
+
+function readableDateTime(value: string): string {
+  if (!value) return "Time unavailable";
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) return value;
+  return new Intl.DateTimeFormat(undefined, {
+    day: "2-digit",
+    month: "short",
+    year: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+  }).format(parsed);
 }
 
 function officialStatus(row: JobRow): { label: string; tone: string } {
@@ -39,6 +52,7 @@ function isApplied(row: JobRow): boolean {
 }
 
 function groupMatchesView(group: QueueGroup, view: QueueView): boolean {
+  if (view === "saved") return group.items.some((item) => item.persisted);
   if (view === "possible") return group.possibleDuplicate;
   if (view === "needs_official") return group.items.some((item) => !rowOfficialUrl(item.row));
   if (view === "official_ready") return group.items.some((item) => Boolean(rowOfficialUrl(item.row)));
@@ -49,15 +63,22 @@ function groupMatchesView(group: QueueGroup, view: QueueView): boolean {
 function groupMatchesSearch(group: QueueGroup, query: string): boolean {
   const needle = query.trim().toLocaleLowerCase();
   if (!needle) return true;
-  return group.items.some((item) => [
-    item.row.company,
-    item.row.title,
-    item.row.location,
-    item.row.provider,
-    item.row.referral_name,
-    item.row.experience_text,
-    item.row.years_of_experience,
-  ].some((value) => scalarText(value).toLocaleLowerCase().includes(needle)));
+  return group.items.some((item) => (
+    [
+      item.row.company,
+      item.row.title,
+      item.row.location,
+      item.row.provider,
+      item.row.referral_name,
+      item.row.experience_text,
+      item.row.years_of_experience,
+    ].some((value) => scalarText(value).toLocaleLowerCase().includes(needle))
+    || item.referralCandidates.some((candidate) =>
+      [candidate.name, candidate.position].some((value) =>
+        value.toLocaleLowerCase().includes(needle),
+      ),
+    )
+  ));
 }
 
 function sourceClass(source: WorkspaceSource): string {
@@ -74,6 +95,15 @@ function changeStatus(value: Scalar | undefined): { label: string; className: st
 }
 
 function RunOutput({ source, run }: { source: WorkspaceSource; run: NonNullable<WorkspaceRuns[WorkspaceSource]> }) {
+  if (run.transient) {
+    return (
+      <article className="run-output-row">
+        <span className={`source-chip ${sourceClass(source)}`}>{SOURCE_LABELS[source]}</span>
+        <div><strong>{run.rows.length} temporary result{run.rows.length === 1 ? "" : "s"}</strong><small>{readableDate(run.run_started_at)} · not written to Drive</small></div>
+        <span className="temporary-result-badge">Session only</span>
+      </article>
+    );
+  }
   const downloadUrl = source === "gmail"
     ? `/api/gmail/runs/${encodeURIComponent(run.run_id)}/download`
     : api.discoveryDownloadUrl(source, run.run_id);
@@ -89,16 +119,72 @@ function RunOutput({ source, run }: { source: WorkspaceSource; run: NonNullable<
   );
 }
 
+function GmailRunHistoryMenu({
+  history,
+  loadedRunId,
+  loadingRunId,
+  onLoad,
+}: {
+  history: GmailRunHistoryEntry[];
+  loadedRunId: string;
+  loadingRunId: string;
+  onLoad: (runId: string) => void;
+}) {
+  return (
+    <details className="run-outputs-menu run-history-menu">
+      <summary>Previous Gmail runs · {history.length}</summary>
+      <div>
+        <header className="run-history-heading">
+          <strong>Previously generated Gmail job files</strong>
+          <span>Load one for review without rereading Gmail.</span>
+        </header>
+        {history.length ? history.map((entry) => {
+          const loaded = entry.run_id === loadedRunId;
+          return (
+            <article className={`run-history-row ${loaded ? "loaded" : ""}`} key={entry.run_id}>
+              <div className="run-history-main">
+                <strong>{entry.file_name}{entry.is_current ? " · Current" : ""}</strong>
+                <small>{readableDateTime(entry.run_started_at)}</small>
+                <span>
+                  {entry.rows_exported} saved job{entry.rows_exported === 1 ? "" : "s"}
+                  {" · "}{entry.unchanged_jobs} unchanged{" · "}{entry.messages_read} emails read
+                </span>
+              </div>
+              <div className="run-history-actions">
+                <button
+                  type="button"
+                  disabled={loaded || !entry.loadable || Boolean(loadingRunId)}
+                  onClick={() => onLoad(entry.run_id)}
+                >
+                  {loadingRunId === entry.run_id ? "Loading…" : loaded ? "Loaded" : "Load jobs"}
+                </button>
+                {entry.loadable && <a href={`/api/gmail/runs/${encodeURIComponent(entry.run_id)}/download`}>Excel</a>}
+                {entry.drive_url && <a href={entry.drive_url} target="_blank" rel="noreferrer">Drive ↗</a>}
+              </div>
+            </article>
+          );
+        }) : <p className="run-history-empty">No saved Gmail runs are available yet.</p>}
+      </div>
+    </details>
+  );
+}
+
 function SourceRecord({
   item,
   applicationStatuses,
+  historical,
+  saving,
   onUpdate,
+  onPersist,
   onOpenJob,
   onCopied,
 }: {
   item: QueueItem;
   applicationStatuses: string[];
+  historical: boolean;
+  saving: boolean;
   onUpdate: (item: QueueItem, column: string, value: Scalar) => void;
+  onPersist: (item: QueueItem, column: string, value: Scalar) => void;
   onOpenJob: (item: QueueItem) => void;
   onCopied: (message: string) => void;
 }) {
@@ -109,6 +195,16 @@ function SourceRecord({
   const referralName = scalarText(row.referral_name);
   const referralProfile = scalarText(row.referral_profile_url);
   const referralMessage = scalarText(row.referral_message);
+  const referralCandidates = item.referralCandidates.length
+    ? item.referralCandidates
+    : referralName
+      ? [{
+          name: referralName,
+          position: scalarText(row.referral_position),
+          profile_url: referralProfile,
+          message: referralMessage,
+        }]
+      : [];
   const runChange = changeStatus(row.run_change_status);
   return (
     <article className="queue-source-record">
@@ -116,6 +212,10 @@ function SourceRecord({
         <span className={`source-chip ${sourceClass(item.source)}`}>{SOURCE_LABELS[item.source]}</span>
         <small>{scalarText(row.provider) || scalarText(row.alert_source) || "Source record"}</small>
         {runChange && <em className={`change-badge ${runChange.className}`}>{runChange.label}</em>}
+        {historical && <em className="change-badge historical">Previous run</em>}
+        <em className={`change-badge ${item.persisted ? "persisted" : "temporary"}`}>
+          {item.persisted ? "Saved in Drive" : "Temporary result"}
+        </em>
       </div>
       <div className="record-main">
         <div className="record-heading">
@@ -146,28 +246,67 @@ function SourceRecord({
           </div>
         </div>
 
-        {referralName && (
-          <div className="record-referral-row">
-            <div>
-              <small>Offline referral lead</small>
-              {referralProfile ? <a href={referralProfile} target="_blank" rel="noreferrer">{referralName} ↗</a> : <strong>{referralName}</strong>}
-              <span>{scalarText(row.referral_position)}</span>
+        {referralCandidates.length > 0 && (
+          <div className="record-referral-list">
+            <div className="record-referral-summary">
+              <small>Offline referral leads</small>
+              <span>{referralCandidates.length} ranked same-company profile{referralCandidates.length === 1 ? "" : "s"} · verify before messaging</span>
             </div>
-            {referralMessage && <button className="text-action" type="button" onClick={() => onCopied(referralMessage)}>Copy referral request</button>}
+            <div className="record-referral-candidates">
+              {referralCandidates.map((candidate, index) => (
+                <div className="record-referral-row" key={`${candidate.profile_url}:${candidate.name}:${index}`}>
+                  <div>
+                    <small>{index === 0 ? "Best-ranked match" : `Alternative ${index + 1}`}</small>
+                    {candidate.profile_url
+                      ? <a href={candidate.profile_url} target="_blank" rel="noreferrer">{candidate.name} ↗</a>
+                      : <strong>{candidate.name}</strong>}
+                    <span>{candidate.position || "Role unavailable in saved export"}</span>
+                  </div>
+                  {candidate.message && (
+                    <button className="text-action" type="button" onClick={() => onCopied(candidate.message)}>
+                      Copy referral request
+                    </button>
+                  )}
+                </div>
+              ))}
+            </div>
           </div>
         )}
 
         <div className="record-review-grid">
           <label className="field">
             <span>Application status</span>
-            <select value={scalarText(row.application_status)} onChange={(event) => onUpdate(item, "application_status", event.target.value)}>
+            <select
+              value={scalarText(row.application_status) || "not_started"}
+              disabled={saving}
+              onChange={(event) => onPersist(item, "application_status", event.target.value)}
+            >
               {applicationStatuses.map((statusValue) => <option key={statusValue}>{statusValue}</option>)}
             </select>
           </label>
           <label className="field record-notes-field">
             <span>Review notes</span>
-            <textarea rows={2} value={scalarText(row.notes)} placeholder="Decision, follow-up, or verification note…" onChange={(event) => onUpdate(item, "notes", event.target.value)} />
+            <textarea
+              rows={2}
+              value={scalarText(row.notes)}
+              placeholder="Decision, follow-up, or verification note…"
+              onChange={(event) => onUpdate(item, "notes", event.target.value)}
+              onBlur={(event) => {
+                const value = event.currentTarget.value.trim();
+                if (value || item.persisted) onPersist(item, "notes", value);
+              }}
+            />
           </label>
+          {!item.persisted && (
+            <button
+              className="secondary-button record-save-action"
+              type="button"
+              disabled={saving}
+              onClick={() => onPersist(item, "application_status", "saved")}
+            >
+              {saving ? "Saving…" : "Save for later"}
+            </button>
+          )}
           <button className="primary-button record-primary-action" type="button" onClick={() => onOpenJob(item)}>
             {officialUrl ? "Review JD + documents" : "Find official JD"}
           </button>
@@ -180,28 +319,37 @@ function SourceRecord({
 export default function JobQueueTab({
   config,
   runs,
-  dirtySources,
-  saving,
-  onSave,
+  savedApplications,
+  gmailHistory,
+  loadingHistoryRunId,
   onUpdate,
+  onPersist,
+  savingJobIds,
   onOpenJob,
   onGoToSetup,
+  onLoadGmailRun,
   onNotice,
 }: {
   config: AppConfig;
   runs: WorkspaceRuns;
-  dirtySources: Set<WorkspaceSource>;
-  saving: boolean;
-  onSave: () => void;
+  savedApplications: SavedApplication[];
+  gmailHistory: GmailRunHistoryEntry[];
+  loadingHistoryRunId: string;
   onUpdate: (item: QueueItem, column: string, value: Scalar) => void;
+  onPersist: (item: QueueItem, column: string, value: Scalar) => void;
+  savingJobIds: Set<string>;
   onOpenJob: (item: QueueItem) => void;
   onGoToSetup: () => void;
+  onLoadGmailRun: (runId: string) => void;
   onNotice: (message: string) => void;
 }) {
   const [query, setQuery] = useState("");
   const [source, setSource] = useState<"all" | WorkspaceSource>("all");
   const [view, setView] = useState<QueueView>("all");
-  const items = useMemo(() => flattenRuns(runs), [runs]);
+  const items = useMemo(
+    () => flattenRuns(runs, savedApplications),
+    [runs, savedApplications],
+  );
   const groups = useMemo(() => groupQueueItems(items), [items]);
   const filtered = useMemo(
     () => groups.filter((group) =>
@@ -214,10 +362,8 @@ export default function JobQueueTab({
   const possibleCount = groups.filter((group) => group.possibleDuplicate).length;
   const officialCount = items.filter((item) => rowOfficialUrl(item.row)).length;
   const appliedCount = items.filter((item) => isApplied(item.row)).length;
-  const previouslySeenCount = items.filter(
-    (item) => scalarText(item.row.run_change_status).toLocaleLowerCase() === "previously_seen",
-  ).length;
-  const newOrChangedCount = items.length - previouslySeenCount;
+  const savedCount = items.filter((item) => item.persisted).length;
+  const currentResultCount = items.filter((item) => item.currentResult).length;
   const runEntries = (Object.entries(runs) as Array<[WorkspaceSource, WorkspaceRuns[WorkspaceSource]]>)
     .filter((entry): entry is [WorkspaceSource, NonNullable<WorkspaceRuns[WorkspaceSource]>] => Boolean(entry[1]));
 
@@ -231,14 +377,27 @@ export default function JobQueueTab({
   };
 
   if (!items.length) {
+    const hasSavedGmailRuns = gmailHistory.length > 0;
     return (
       <main className="product-page queue-page">
         <section className="premium-empty-state">
           <span className="empty-state-mark">01</span>
           <p className="eyebrow">Application queue</p>
-          <h2>Run at least one source to build your review queue.</h2>
-          <p>Your Gmail alerts, official company results, and structured ATS jobs will stay as separate evidence records while likely matches are grouped for verification.</p>
-          <button className="primary-button" type="button" onClick={onGoToSetup}>Open Run Setup</button>
+          <h2>{hasSavedGmailRuns ? "No current or saved jobs are visible." : "Search at least one source to build your review queue."}</h2>
+          <p>{hasSavedGmailRuns
+            ? "Start a fresh search or open a previous Gmail workbook to review jobs collected before the canonical application queue was introduced."
+            : "Temporary Gmail alerts, official company results, and structured ATS jobs stay as separate evidence records until you explicitly save one."}</p>
+          <div className="empty-state-actions">
+            {hasSavedGmailRuns && (
+              <GmailRunHistoryMenu
+                history={gmailHistory}
+                loadedRunId={runs.gmail?.run_id ?? ""}
+                loadingRunId={loadingHistoryRunId}
+                onLoad={onLoadGmailRun}
+              />
+            )}
+            <button className="primary-button" type="button" onClick={onGoToSetup}>Open Search</button>
+          </div>
         </section>
       </main>
     );
@@ -248,24 +407,42 @@ export default function JobQueueTab({
     <main className="product-page queue-page">
       <section className="page-intro queue-intro">
         <div>
-          <p className="eyebrow">Verification-first application queue</p>
+          <p className="eyebrow">Temporary results · permanent application tracking</p>
           <h2>Review the opportunity once. Keep every source as evidence.</h2>
-          <p>Possible duplicates are grouped visually and remain unmerged until you verify the official posting.</p>
+          <p>Searches stay in this session. Save for later, status changes, and notes create or update the permanent Drive queue.</p>
         </div>
         <div className="queue-heading-actions">
+          {gmailHistory.length > 0 && (
+            <GmailRunHistoryMenu
+              history={gmailHistory}
+              loadedRunId={runs.gmail?.run_id ?? ""}
+              loadingRunId={loadingHistoryRunId}
+              onLoad={onLoadGmailRun}
+            />
+          )}
           <details className="run-outputs-menu">
-            <summary>{runEntries.length} current run output{runEntries.length === 1 ? "" : "s"}</summary>
+            <summary>{runEntries.length} visible source set{runEntries.length === 1 ? "" : "s"}</summary>
             <div>{runEntries.map(([runSource, run]) => <RunOutput source={runSource} run={run} key={runSource} />)}</div>
           </details>
-          <button className="primary-button" type="button" disabled={!dirtySources.size || saving} onClick={onSave}>
-            {saving ? "Saving to Drive…" : dirtySources.size ? `Save ${dirtySources.size} changed source${dirtySources.size === 1 ? "" : "s"}` : "Saved"}
-          </button>
+          <span className="queue-persistence-state">
+            {savingJobIds.size ? `Saving ${savingJobIds.size} job${savingJobIds.size === 1 ? "" : "s"}…` : `${savedCount} saved permanently`}
+          </span>
         </div>
       </section>
 
+      {runs.gmail?.historical && (
+        <section className="historical-run-banner" role="status">
+          <div>
+            <strong>Previous Gmail run loaded</strong>
+            <span>{runs.gmail.file_name} remains unchanged. Any new tracking action saves to the canonical application queue.</span>
+          </div>
+          <span className="safe-badge">Editable tracking</span>
+        </section>
+      )}
+
       <section className="queue-stats" aria-label="Queue summary">
-        <button className={view === "all" ? "active" : ""} type="button" onClick={() => setView("all")}><small>Current matches</small><strong>{items.length}</strong><span>{newOrChangedCount} new/changed · {previouslySeenCount} seen</span></button>
-        <button className={view === "possible" ? "active" : ""} type="button" onClick={() => setView("possible")}><small>Possible same jobs</small><strong>{possibleCount}</strong><span>Needs verification</span></button>
+        <button className={view === "all" ? "active" : ""} type="button" onClick={() => setView("all")}><small>Visible jobs</small><strong>{items.length}</strong><span>{currentResultCount} current search results</span></button>
+        <button className={view === "saved" ? "active" : ""} type="button" onClick={() => setView("saved")}><small>Saved jobs</small><strong>{savedCount}</strong><span>Permanent Drive queue</span></button>
         <button className={view === "official_ready" ? "active" : ""} type="button" onClick={() => setView("official_ready")}><small>Official links</small><strong>{officialCount}</strong><span>JD actions ready</span></button>
         <button className={view === "applied" ? "active" : ""} type="button" onClick={() => setView("applied")}><small>In progress</small><strong>{appliedCount}</strong><span>Applied or later</span></button>
       </section>
@@ -278,6 +455,8 @@ export default function JobQueueTab({
           </label>
           <div className="segmented-filter" aria-label="Queue state">
             <button className={view === "all" ? "active" : ""} onClick={() => setView("all")} type="button">All</button>
+            <button className={view === "saved" ? "active" : ""} onClick={() => setView("saved")} type="button">Saved</button>
+            <button className={view === "possible" ? "active" : ""} onClick={() => setView("possible")} type="button">Possible duplicates ({possibleCount})</button>
             <button className={view === "needs_official" ? "active" : ""} onClick={() => setView("needs_official")} type="button">Needs official match</button>
             <button className={view === "official_ready" ? "active" : ""} onClick={() => setView("official_ready")} type="button">Official ready</button>
           </div>
@@ -321,7 +500,10 @@ export default function JobQueueTab({
                     <SourceRecord
                       item={item}
                       applicationStatuses={config.application_statuses}
+                      historical={Boolean(runs[item.source]?.historical)}
+                      saving={savingJobIds.has(item.id)}
                       onUpdate={onUpdate}
+                      onPersist={onPersist}
                       onOpenJob={onOpenJob}
                       onCopied={copyReferral}
                       key={item.id}

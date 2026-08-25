@@ -9,7 +9,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 from urllib.parse import urlsplit, urlunsplit
 
-from job_hunt.experience import classify_experience_fit, extract_experience_range
+from job_hunt.jobs.experience import classify_experience_fit, extract_experience_range
 
 
 MAX_DESCRIPTION_CHARS = 6000

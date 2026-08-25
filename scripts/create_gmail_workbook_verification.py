@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import datetime
 from pathlib import Path
 
-from job_hunt.gmail_workbook import verify_gmail_run_workbook, write_gmail_run_workbook
+from job_hunt.gmail.workbook import verify_gmail_run_workbook, write_gmail_run_workbook
 from job_hunt.integrations.sheets import JOB_COLUMNS
 
 

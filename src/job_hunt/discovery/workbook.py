@@ -76,6 +76,7 @@ SOURCE_CHECK_COLUMNS = [
 EDITABLE_DISCOVERY_COLUMNS = {"application_status", "notes"}
 APPLICATION_STATUSES = [
     "not_started",
+    "saved",
     "reviewing",
     "shortlisted",
     "applied",

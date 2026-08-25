@@ -3,11 +3,16 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from job_hunt.gmail_service import AppPaths
+from job_hunt.runtime.paths import AppPaths
 from job_hunt.integrations.ashby_postings import ExactPostingResolution
-from job_hunt.job_intelligence import JobIntelligenceService, _confirmed_skill_evidence
-from job_hunt.openai_config import OpenAISettings
-from job_hunt.resume_docx import extract_resume_evidence, resume_sha256
+from job_hunt.intelligence.service import (
+    JobIntelligenceService,
+    ResumePlanner,
+    _confirmed_skill_evidence,
+    score_ats_alignment,
+)
+from job_hunt.intelligence.config import OpenAISettings
+from job_hunt.resumes.docx import extract_resume_evidence, resume_sha256
 from tests.docx_fixture import create_resume_docx
 
 
@@ -149,6 +154,7 @@ class _FakeResumeLibrary:
         self.reference_hash = hashlib.sha256(self.reference.read_bytes()).hexdigest()
         self.records = {}
         self.confirmed_evidence = []
+        self.upload_context = []
 
     def status(self):
         return {
@@ -195,11 +201,32 @@ class _FakeResumeLibrary:
             "library_url": "https://drive.example/library",
         }
 
-    def upload_artifact(self, local_path, run_date, _mime_type):
+    def upload_artifact(
+        self,
+        local_path,
+        *,
+        company_name,
+        role_name,
+        prepared_on,
+        mime_type,
+    ):
+        self.upload_context.append(
+            {
+                "file_name": Path(local_path).name,
+                "company_name": company_name,
+                "role_name": role_name,
+                "prepared_on": prepared_on,
+                "mime_type": mime_type,
+            }
+        )
         return {
             "file_id": f"drive-{Path(local_path).stem}",
             "drive_url": f"https://drive.example/files/{Path(local_path).name}",
-            "folder_url": f"https://drive.example/{run_date}/Resumes",
+            "folder_url": "https://drive.example/application-folder",
+            "folder_path": (
+                f"Job Hunt/Resumes/{company_name}/"
+                f"{prepared_on}_{role_name.replace(' ', '_')}"
+            ),
         }
 
     def store_confirmed_skill_evidence(self, entries):
@@ -220,6 +247,46 @@ def _fake_pdf_converter(_input_path: Path, output_path: Path) -> Path:
 
 
 class JobIntelligenceTests(unittest.TestCase):
+    def test_resume_planner_emits_usage_without_prompt_or_evidence_content(self):
+        captured = []
+        planner = ResumePlanner("unused", "gpt-5.6-luna", client=object())
+        planner.configure_usage_recording(
+            lambda response, **metadata: captured.append((response, metadata)) or {},
+            context={
+                "job_record_id": "job-1",
+                "company": "Example",
+                "title": "ML Engineer",
+            },
+        )
+
+        response = object()
+        planner._record_usage(response)
+
+        self.assertEqual(captured[0][0], response)
+        self.assertEqual(captured[0][1]["operation"], "resume_plan")
+        self.assertEqual(captured[0][1]["context"]["company"], "Example")
+
+    def test_ats_alignment_is_deterministic_and_distinct_from_vendor_scores(self):
+        before = score_ats_alignment(
+            POSTING,
+            (
+                "Machine Learning Engineer using Python and AWS. "
+                "Technical Skills: Docker."
+            ),
+        )
+        after = score_ats_alignment(
+            POSTING,
+            (
+                "Machine Learning Engineer using Python and AWS. "
+                "Technical Skills: Docker, Context engineering."
+            ),
+        )
+
+        self.assertEqual(before["score"], 80)
+        self.assertEqual(before["missing_required"], ["Context engineering"])
+        self.assertEqual(after["score"], 100)
+        self.assertIn("Required terms 80%", before["breakdown"])
+
     def test_confirmed_skill_evidence_requires_an_exact_gap_and_contact_free_note(self):
         posting = {
             "required_skills": ["Context engineering"],
@@ -378,6 +445,10 @@ class JobIntelligenceTests(unittest.TestCase):
 
             self.assertEqual(analysis["candidates"][0]["official_match_score"], 96)
             self.assertGreater(analysis["candidates"][0]["eligibility"]["score"], 0)
+            self.assertEqual(
+                analysis["eligibility_evidence_source"],
+                "active_baseline_resume",
+            )
             self.assertNotIn("source_url", researcher.jobs[0])
             self.assertNotIn("gmail_message_id", researcher.jobs[0])
             result = service.generate_documents(
@@ -400,6 +471,34 @@ class JobIntelligenceTests(unittest.TestCase):
                 {item["kind"] for item in result["artifacts"]},
                 {"resume_docx", "resume_pdf", "cover_letter"},
             )
+            names_by_kind = {
+                item["kind"]: item["file_name"] for item in result["artifacts"]
+            }
+            self.assertEqual(
+                names_by_kind,
+                {
+                    "resume_docx": "Asrith_Ladi_AI_ML_Engineer_6Y.docx",
+                    "resume_pdf": "Asrith_Ladi_AI_ML_Engineer_6Y.pdf",
+                    "cover_letter": (
+                        "Asrith_Ladi_AI_ML_Engineer_6Y_Cover_Letter.docx"
+                    ),
+                },
+            )
+            self.assertTrue(
+                all(
+                    item["company_name"] == "Example Company"
+                    and item["role_name"] == "Senior Machine Learning Engineer"
+                    for item in library.upload_context
+                )
+            )
+            self.assertTrue(
+                all(
+                    item["folder_path"].startswith(
+                        "Job Hunt/Resumes/Example Company/"
+                    )
+                    for item in result["artifacts"]
+                )
+            )
             self.assertTrue(result["baseline_unchanged"])
             self.assertEqual(library.baseline.read_bytes(), baseline_before)
             self.assertTrue(planner.cover_letter_requested)
@@ -410,6 +509,11 @@ class JobIntelligenceTests(unittest.TestCase):
             self.assertIn("Designed retrieval context", serialized_evidence)
             self.assertTrue(result["reference_points_used"])
             self.assertEqual(result["confirmed_skills_added"], ["Context engineering"])
+            self.assertEqual(result["skill_placements"][0]["category"], "AI")
+            self.assertEqual(result["experience_bullets_reframed"], 0)
+            self.assertEqual(result["ats_alignment"]["before"]["score"], 80)
+            self.assertEqual(result["ats_alignment"]["after"]["score"], 100)
+            self.assertEqual(result["ats_alignment"]["delta"], 20)
             self.assertEqual(library.confirmed_evidence[0]["skill"], "Context engineering")
             self.assertTrue(result["requires_user_review"])
             self.assertTrue(result["warnings"])
@@ -418,9 +522,14 @@ class JobIntelligenceTests(unittest.TestCase):
             path, metadata = service.artifact(first_artifact["artifact_id"])
             self.assertTrue(path.is_file())
             self.assertEqual(metadata["artifact_id"], first_artifact["artifact_id"])
-            self.assertIn(
-                "Additional Skills: Context engineering",
-                [item["text"] for item in extract_resume_evidence(path)["skills"]],
+            tailored_skill_lines = [
+                item["text"] for item in extract_resume_evidence(path)["skills"]
+            ]
+            self.assertTrue(
+                any("Context engineering" in line for line in tailored_skill_lines)
+            )
+            self.assertFalse(
+                any(line.startswith("Additional Skills:") for line in tailored_skill_lines)
             )
 
             cached = service.generate_documents(

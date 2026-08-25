@@ -112,6 +112,41 @@ class OpenAIResearchTests(unittest.TestCase):
         self.assertIsNone(posting["experience_max"])
         self.assertNotIn("tools", client.responses.calls[0])
 
+    def test_exact_posting_extraction_emits_privacy_safe_usage_hook(self):
+        client = _FakeClient(
+            {
+                "description_summary": "Build Python services.",
+                "experience_evidence": "",
+                "required_skills": [
+                    {"label": "Python", "evidence": "Python services"}
+                ],
+                "preferred_skills": [],
+            }
+        )
+        calls = []
+        researcher = OfficialJobResearcher("unused", client=client)
+        researcher.configure_usage_recording(
+            lambda response, **metadata: calls.append((response, metadata)) or {},
+            context={"job_record_id": "job-1", "company": "Example"},
+        )
+
+        researcher.extract_exact_posting(
+            {"company": "Example"},
+            {
+                "board": "example",
+                "external_job_id": "job-1",
+                "title": "ML Engineer",
+                "location": "Remote",
+                "official_url": "https://careers.example.com/jobs/job-1",
+                "description": "Build Python services.",
+                "source_fingerprint": "fingerprint",
+            },
+        )
+
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0][1]["operation"], "exact_jd_extraction")
+        self.assertEqual(calls[0][1]["context"]["job_record_id"], "job-1")
+
     def test_exact_only_research_rejects_a_related_job_url(self):
         selected_id = "36f89b00-2010-4d23-aae3-17a2f53d9eaa"
         related_id = "30259734-50c3-4f1c-81cd-8bff07e585e7"

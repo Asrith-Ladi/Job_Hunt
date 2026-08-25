@@ -1,4 +1,4 @@
-"""Create the app-owned Job Hunt/Source Drive folders and sync the registry."""
+"""Initialize the app-owned Drive registry without overwriting an existing copy."""
 
 from __future__ import annotations
 
@@ -6,14 +6,16 @@ import argparse
 from pathlib import Path
 
 from job_hunt.integrations.drive_storage import (
+    EXCEL_MIME_TYPE,
     build_drive_service,
     drive_file_url,
     drive_folder_url,
     ensure_job_hunt_folders,
+    find_child_file,
     upload_or_update_file,
 )
 from job_hunt.integrations.google_auth import load_stored_credentials
-from job_hunt.local_state import load_local_state, save_local_state
+from job_hunt.runtime.state import load_local_state, save_local_state
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -39,7 +41,7 @@ def main() -> int:
     args = parse_args()
     credentials = load_stored_credentials(args.token)
     if credentials is None:
-        raise RuntimeError("Google is not connected. Complete OAuth in Streamlit first.")
+        raise RuntimeError("Google is not connected. Complete OAuth in the React application.")
     if not args.registry.is_file():
         raise FileNotFoundError("The canonical company registry was not found.")
 
@@ -47,12 +49,18 @@ def main() -> int:
     drive_service = build_drive_service(credentials)
     folders = ensure_job_hunt_folders(drive_service)
     source_ids = dict(state.get("drive_source_file_ids") or {})
-    registry = upload_or_update_file(
+    registry = find_child_file(
         drive_service,
-        args.registry,
+        args.registry.name,
         parent_id=str(folders["source"]["id"]),
-        existing_file_id=source_ids.get(args.registry.name),
+        mime_type=EXCEL_MIME_TYPE,
     )
+    if registry is None:
+        registry = upload_or_update_file(
+            drive_service,
+            args.registry,
+            parent_id=str(folders["source"]["id"]),
+        )
     source_ids[args.registry.name] = registry["id"]
     state.update(
         {

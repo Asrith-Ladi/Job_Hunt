@@ -4,7 +4,7 @@ from pathlib import Path
 
 from fastapi.testclient import TestClient
 
-from backend.main import create_app
+from job_hunt.api.main import create_app
 
 
 RUN = {
@@ -70,6 +70,21 @@ class _Discovery:
             }
         ]
 
+    def registry_snapshot(self):
+        companies = self.registry()
+        return {
+            "companies": companies,
+            "count": len(companies),
+            "registry_status": {
+                "sync_status": "drive_current",
+                "source": "google_drive",
+                "warning": "",
+                "drive_url": "https://drive.example/registry",
+                "drive_modified_time": "2026-08-20T10:00:00Z",
+                "synced_at": "2026-08-20T10:00:01Z",
+            },
+        }
+
     def latest(self, mode):
         value = dict(RUN)
         value["mode"] = mode
@@ -79,6 +94,17 @@ class _Discovery:
         self.last_options = options
         value = dict(RUN)
         value["mode"] = options.mode
+        return value
+
+    def search(self, options):
+        self.last_options = options
+        value = dict(RUN)
+        value.update({
+            "mode": options.mode,
+            "file_name": "",
+            "drive_url": "",
+            "transient": True,
+        })
         return value
 
     def get(self, mode, run_id):
@@ -121,6 +147,7 @@ class DiscoveryApiTests(unittest.TestCase):
         registry = self.client.get("/api/registry/companies")
         self.assertEqual(registry.status_code, 200)
         self.assertEqual(registry.json()["count"], 1)
+        self.assertEqual(registry.json()["registry_status"]["source"], "google_drive")
         detection = self.client.post(
             "/api/sources/detect",
             json={"careers_url": "https://jobs.lever.co/example"},
@@ -135,7 +162,7 @@ class DiscoveryApiTests(unittest.TestCase):
 
     def test_company_and_manual_ats_requests_map_to_separate_modes(self):
         company = self.client.post(
-            "/api/company-portals/runs",
+            "/api/search/company-portals",
             json={"company_ids": ["company-1"], "filters": {"keyword": "ML"}},
         )
         self.assertEqual(company.status_code, 200)
@@ -143,7 +170,7 @@ class DiscoveryApiTests(unittest.TestCase):
         self.assertEqual(self.discovery.last_options.filters.keyword, "ML")
 
         ats = self.client.post(
-            "/api/ats-sources/runs",
+            "/api/search/ats-sources",
             json={
                 "company_ids": [],
                 "manual_sources": [
@@ -160,18 +187,20 @@ class DiscoveryApiTests(unittest.TestCase):
         self.assertEqual(self.discovery.last_options.mode, "ats_sources")
         self.assertEqual(self.discovery.last_options.manual_sources[0].region, "eu")
 
-    def test_source_limits_edits_and_download_identity(self):
+        self.assertTrue(ats.json()["run"]["transient"])
+        self.assertEqual(ats.json()["run"]["file_name"], "")
+
+    def test_source_limits_legacy_write_disable_and_download_identity(self):
         too_many = self.client.post(
-            "/api/company-portals/runs",
+            "/api/search/company-portals",
             json={"company_ids": [f"company-{index}" for index in range(11)]},
         )
         self.assertEqual(too_many.status_code, 422)
-        saved = self.client.put(
+        disabled = self.client.put(
             "/api/company-portals/runs/company_portals-test/jobs",
             json={"rows": [{"job_record_id": "job-1", "application_status": "reviewing"}]},
         )
-        self.assertEqual(saved.status_code, 200)
-        self.assertEqual(saved.json()["run"]["rows"][0]["application_status"], "reviewing")
+        self.assertEqual(disabled.status_code, 404)
         download = self.client.get("/api/company-portals/runs/company_portals-test/download")
         self.assertEqual(download.content, b"workbook")
 

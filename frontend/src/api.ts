@@ -1,19 +1,24 @@
 import type {
+  AIUsageReport,
   AppConfig,
-  CompanyRegistryEntry,
   ConfirmedSkillEvidence,
   DiscoveryFiltersSettings,
   DiscoveryRunArtifact,
   GoogleStatus,
   GeneratedArtifactKind,
   GeneratedDocumentSet,
+  GmailRunHistoryEntry,
   JobAnalysis,
   JobIntelligenceStatus,
   JobRow,
   ManualAtsSource,
   NetworkConnectionsResponse,
+  RegistryResponse,
   RunArtifact,
   RunSettings,
+  ApplicationsResponse,
+  ReferralCandidate,
+  SavedApplication,
 } from "./types";
 
 export type DiscoveryMode = "company_portals" | "ats_sources";
@@ -33,6 +38,14 @@ async function request<T>(url: string, init?: RequestInit): Promise<T> {
   });
   const contentType = response.headers.get("content-type") ?? "";
   if (!response.ok) {
+    if (
+      (response.status === 404 || response.status === 405) &&
+      url.startsWith("/api/search/")
+    ) {
+      throw new Error(
+        "The UI and backend versions do not match. Restart FastAPI, then refresh this page.",
+      );
+    }
     let message = `Request failed (${response.status})`;
     try {
       if (!contentType.includes("application/json")) throw new Error("Non-JSON response");
@@ -82,9 +95,11 @@ export const api = {
     request<{ authorization_url: string }>("/api/auth/google/start", {
       method: "POST",
     }),
-  latestRun: () => request<{ run: RunArtifact | null }>("/api/gmail/runs/latest"),
-  runGmail: (settings: RunSettings) =>
-    request<{ run: RunArtifact }>("/api/gmail/runs", {
+  gmailRunHistory: () => request<{ runs: GmailRunHistoryEntry[] }>("/api/gmail/runs"),
+  gmailRun: (runId: string) =>
+    request<{ run: RunArtifact }>(`/api/gmail/runs/${encodeURIComponent(runId)}`),
+  searchGmail: (settings: RunSettings) =>
+    request<{ run: RunArtifact }>("/api/search/gmail", {
       method: "POST",
       body: JSON.stringify({
         sources: settings.sources,
@@ -102,13 +117,10 @@ export const api = {
         strict_experience_filter: settings.strict_experience_filter,
       }),
     }),
-  saveRows: (runId: string, rows: JobRow[]) =>
-    request<{ run: RunArtifact }>(`/api/gmail/runs/${encodeURIComponent(runId)}/jobs`, {
-      method: "PUT",
-      body: JSON.stringify({ rows }),
-    }),
   jobIntelligenceStatus: () =>
     request<JobIntelligenceStatus>("/api/job-intelligence/status"),
+  aiUsage: (limit = 20) =>
+    request<AIUsageReport>(`/api/job-intelligence/usage?limit=${encodeURIComponent(limit)}`),
   uploadBaselineResume: (file: File) => {
     const form = new FormData();
     form.append("file", file);
@@ -157,21 +169,30 @@ export const api = {
         refresh_plan: options.refreshPlan ?? false,
       }),
     }),
-  registry: () =>
-    request<{
-      companies: CompanyRegistryEntry[];
-      count: number;
-      supported_ats_providers: string[];
-    }>("/api/registry/companies"),
-  latestDiscoveryRun: (mode: DiscoveryMode) =>
-    request<{ run: DiscoveryRunArtifact | null }>(`${discoveryBase(mode)}/runs/latest`),
-  runDiscovery: (
+  registry: () => request<RegistryResponse>("/api/registry/companies"),
+  applications: () => request<ApplicationsResponse>("/api/applications"),
+  saveApplication: (
+    source: "gmail" | "company_portals" | "ats_sources",
+    row: JobRow,
+    referralCandidates: ReferralCandidate[],
+  ) => request<{ application: SavedApplication; count: number; drive_url: string }>(
+    "/api/applications",
+    {
+      method: "PUT",
+      body: JSON.stringify({
+        source,
+        row,
+        referral_candidates: referralCandidates,
+      }),
+    },
+  ),
+  searchDiscovery: (
     mode: DiscoveryMode,
     companyIds: string[],
     manualSources: ManualAtsSource[],
     filters: DiscoveryFiltersSettings,
   ) =>
-    request<{ run: DiscoveryRunArtifact }>(`${discoveryBase(mode)}/runs`, {
+    request<{ run: DiscoveryRunArtifact }>(`/api/search/${mode === "company_portals" ? "company-portals" : "ats-sources"}`, {
       method: "POST",
       body: JSON.stringify({
         company_ids: companyIds,
@@ -179,14 +200,6 @@ export const api = {
         filters,
       }),
     }),
-  saveDiscoveryRows: (mode: DiscoveryMode, runId: string, rows: JobRow[]) =>
-    request<{ run: DiscoveryRunArtifact }>(
-      `${discoveryBase(mode)}/runs/${encodeURIComponent(runId)}/jobs`,
-      {
-        method: "PUT",
-        body: JSON.stringify({ rows }),
-      },
-    ),
   discoveryDownloadUrl: (mode: DiscoveryMode, runId: string) =>
     `${discoveryBase(mode)}/runs/${encodeURIComponent(runId)}/download`,
   networkConnections: (options: {

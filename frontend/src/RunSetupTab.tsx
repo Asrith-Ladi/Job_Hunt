@@ -4,6 +4,7 @@ import type {
   CompanyRegistryEntry,
   DiscoveryFiltersSettings,
   ManualAtsSource,
+  RegistryStatus,
   RunSettings,
 } from "./types";
 import { SOURCE_LABELS, type WorkspaceSource } from "./workspace";
@@ -48,6 +49,16 @@ const EMPTY_MANUAL: ManualAtsSource = {
   careers_url: "",
 };
 
+const COMPANY_CATEGORY_ORDER = [
+  "MNC",
+  "Product Companies",
+  "Startups",
+  "Mid-Sized Companies",
+  "Other Companies",
+] as const;
+const ALL_COMPANIES = "__all_companies__";
+const SELECTED_COMPANIES = "__selected_companies__";
+
 function sourceCount(source: WorkspaceSource, value: RunSetupState): string {
   if (source === "gmail") return `${value.gmail.sources.length} alert provider${value.gmail.sources.length === 1 ? "" : "s"}`;
   if (source === "company_portals") return `${value.companyIds.length} compan${value.companyIds.length === 1 ? "y" : "ies"}`;
@@ -69,11 +80,25 @@ function CompanySelector({
   emptyText: string;
 }) {
   const [query, setQuery] = useState("");
+  const [categoryFilter, setCategoryFilter] = useState(ALL_COMPANIES);
   const needle = query.trim().toLocaleLowerCase();
-  const visible = rows.filter((item) =>
-    !needle || [item.company, item.sector, item.category, item.detection.provider]
-      .some((value) => value.toLocaleLowerCase().includes(needle)),
-  );
+  const categoryOptions = useMemo(() => {
+    const counts = new Map<string, number>();
+    rows.forEach((item) => counts.set(item.category, (counts.get(item.category) ?? 0) + 1));
+    const ordered = COMPANY_CATEGORY_ORDER.filter((category) => counts.has(category));
+    const additional = [...counts.keys()]
+      .filter((category) => !COMPANY_CATEGORY_ORDER.some((known) => known === category))
+      .sort((left, right) => left.localeCompare(right));
+    return [...ordered, ...additional].map((category) => ({ category, count: counts.get(category) ?? 0 }));
+  }, [rows]);
+  const visible = rows.filter((item) => {
+    const inCategory = categoryFilter === ALL_COMPANIES
+      || (categoryFilter === SELECTED_COMPANIES && selected.includes(item.company_id))
+      || item.category === categoryFilter;
+    const matchesQuery = !needle || [item.company, item.sector, item.category, item.detection.provider]
+      .some((value) => value.toLocaleLowerCase().includes(needle));
+    return inCategory && matchesQuery;
+  });
 
   const toggle = (companyId: string) => {
     if (selected.includes(companyId)) {
@@ -85,6 +110,39 @@ function CompanySelector({
 
   return (
     <div className="registry-selector">
+      <div className="registry-category-header">
+        <strong>Company type</strong>
+        <span>Selections stay active when you switch groups.</span>
+      </div>
+      <div className="registry-category-filters" role="group" aria-label="Filter companies by registry category">
+        <button
+          type="button"
+          className={categoryFilter === ALL_COMPANIES ? "active" : ""}
+          aria-pressed={categoryFilter === ALL_COMPANIES}
+          onClick={() => setCategoryFilter(ALL_COMPANIES)}
+        >
+          <span>All</span><b>{rows.length}</b>
+        </button>
+        {categoryOptions.map(({ category, count }) => (
+          <button
+            type="button"
+            className={categoryFilter === category ? "active" : ""}
+            aria-pressed={categoryFilter === category}
+            onClick={() => setCategoryFilter(category)}
+            key={category}
+          >
+            <span>{category}</span><b>{count}</b>
+          </button>
+        ))}
+        <button
+          type="button"
+          className={`selected-filter ${categoryFilter === SELECTED_COMPANIES ? "active" : ""}`}
+          aria-pressed={categoryFilter === SELECTED_COMPANIES}
+          onClick={() => setCategoryFilter(SELECTED_COMPANIES)}
+        >
+          <span>Selected</span><b>{selected.length}</b>
+        </button>
+      </div>
       <div className="registry-search-row">
         <label className="search-field">
           <span aria-hidden="true">⌕</span>
@@ -107,7 +165,15 @@ function CompanySelector({
             </label>
           );
         })}
-        {!visible.length && <p className="registry-empty">{emptyText}</p>}
+        {!visible.length && (
+          <p className="registry-empty">
+            {categoryFilter === SELECTED_COMPANIES && !selected.length
+              ? "No companies selected yet. Choose a company from any group to see it here."
+              : needle
+                ? "No companies match this type and search."
+                : emptyText}
+          </p>
+        )}
       </div>
     </div>
   );
@@ -117,20 +183,26 @@ export default function RunSetupTab({
   config,
   googleConnected,
   registry,
+  registryStatus,
+  refreshingRegistry,
   value,
   onChange,
   onRun,
   onConnectGoogle,
+  onRefreshRegistry,
   runningSource,
   outcomes,
 }: {
   config: AppConfig;
   googleConnected: boolean;
   registry: CompanyRegistryEntry[];
+  registryStatus: RegistryStatus | null;
+  refreshingRegistry: boolean;
   value: RunSetupState;
   onChange: (value: RunSetupState) => void;
   onRun: () => void;
   onConnectGoogle: () => void;
+  onRefreshRegistry: () => void;
   runningSource: WorkspaceSource | "";
   outcomes: Partial<Record<WorkspaceSource, SourceOutcome>>;
 }) {
@@ -180,17 +252,17 @@ export default function RunSetupTab({
     <main className="product-page run-setup-page">
       <section className="page-intro setup-intro">
         <div>
-          <p className="eyebrow">Focused discovery run</p>
+          <p className="eyebrow">Focused job search</p>
           <h2>Choose where today’s opportunities should come from.</h2>
-          <p>One setup, independent source runs, and one queue for review. A source failure never removes another source’s results.</p>
+          <p>Searches are temporary and independent. Only jobs you save, annotate, or move to another application status are written to Drive.</p>
         </div>
         <div className="intro-action-stack">
           <span className={`readiness-pill ${googleConnected ? "ready" : "blocked"}`}>
-            <span />{googleConnected ? "Drive ready" : "Google connection required"}
+            <span />{googleConnected ? "Sources ready" : "Google connection required"}
           </span>
           {googleConnected ? (
             <button className="primary-button premium-run-button" type="button" onClick={onRun} disabled={running || !value.enabledSources.length}>
-              {running ? `Running ${SOURCE_LABELS[runningSource as WorkspaceSource]}…` : `Run ${value.enabledSources.length || 0} selected source${value.enabledSources.length === 1 ? "" : "s"}`}
+              {running ? `Searching ${SOURCE_LABELS[runningSource as WorkspaceSource]}…` : `Search ${value.enabledSources.length || 0} selected source${value.enabledSources.length === 1 ? "" : "s"}`}
             </button>
           ) : (
             <button className="primary-button premium-run-button" type="button" onClick={onConnectGoogle}>Connect Google</button>
@@ -352,6 +424,23 @@ export default function RunSetupTab({
             <div><p className="eyebrow">Company configuration</p><h3>Select official employers</h3></div>
             <span className="safe-badge">Maximum {config.discovery_max_sources_per_run}</span>
           </div>
+          <div className={`registry-source-bar ${registryStatus?.warning ? "warning" : ""}`}>
+            <div>
+              <strong>{registryStatus?.source === "google_drive" ? "Drive registry" : "Validated registry cache"}</strong>
+              <span>
+                {registryStatus?.warning
+                  || "Refresh after editing Company_Source_Registry.xlsx in Job Hunt / Source."}
+              </span>
+            </div>
+            <div>
+              {registryStatus?.drive_url && (
+                <a href={registryStatus.drive_url} target="_blank" rel="noreferrer">Open in Drive ↗</a>
+              )}
+              <button type="button" onClick={onRefreshRegistry} disabled={refreshingRegistry}>
+                {refreshingRegistry ? "Refreshing…" : "Refresh registry"}
+              </button>
+            </div>
+          </div>
           <CompanySelector
             rows={registry}
             selected={value.companyIds}
@@ -400,7 +489,7 @@ export default function RunSetupTab({
 
       <section className="run-boundary-note">
         <strong>Safe execution boundary</strong>
-        <span>No protected LinkedIn/Naukri scraping, employer login, application submission, or automatic Luna call runs here.</span>
+        <span>No protected LinkedIn/Naukri scraping, employer login, application submission, automatic Luna call, or per-search Drive export runs here.</span>
       </section>
     </main>
   );

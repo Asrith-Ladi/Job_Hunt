@@ -88,7 +88,7 @@ current scoring relies on structural text plus explicit dated role evidence.
 
 ## Implementation
 
-- `src/job_hunt/enrichment.py` contains company normalization, referral ranking, experience
+- `src/job_hunt/jobs/enrichment.py` contains company normalization, referral ranking, experience
   scoring, eligibility scoring, and cold-message generation.
 - `scripts/build_production_tracker.py` builds, formats, and verifies the existing workbook.
 - `local_samples/private/official_research_2026-07-20.json` is the ignored research snapshot

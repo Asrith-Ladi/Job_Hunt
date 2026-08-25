@@ -21,9 +21,10 @@ Read documents in this order:
 
 ## Current discussion
 
+- `discussions/031_transient_search_and_application_queue.md` - active search and canonical application persistence lifecycle.
 - `discussions/018_streamlit_retirement_and_job_intelligence.md` - completed Streamlit retirement plus explicit official-JD, eligibility, and tailored-resume actions.
 - `discussions/013_react_fastapi_migration.md` - completed React/FastAPI migration; real per-tab acceptance runs remain useful before deployment.
-- `discussions/012_streamlit_gmail_run_workbooks.md` - historical dated-workbook behavior retained by React; Streamlit is retired.
+- `discussions/012_streamlit_gmail_run_workbooks.md` - historical dated-workbook behavior retained only for compatibility; Streamlit is retired.
 
 - `discussions/001_gmail_alerts_to_google_sheet.md` — active for UI/deployment integration.
 - `discussions/005_production_job_tracker.md` — latest completed real-data batch and workbook design.

@@ -36,7 +36,7 @@ Alternative terminal values: `deferred`, `rejected`, `cancelled`, or `superseded
 | Q-022 | done | 1 | Replace Streamlit with a React + TypeScript UI and FastAPI backend while preserving the Gmail workbook workflow; retire Streamlit after user approval | `discussions/013_react_fastapi_migration.md`, `discussions/018_streamlit_retirement_and_job_intelligence.md` |
 | Q-023 | done | 1 | Implement the registry-driven Company Portals phase with selected batches, public structured-first discovery, safe sitemap/static fallbacks, and dated workbooks | `discussions/014_company_portals_and_ats_sources.md` |
 | Q-024 | done | 1 | Implement Greenhouse, Lever, Workable, and SmartRecruiters ATS adapters plus detection-only fallbacks for company-specific platforms | `discussions/014_company_portals_and_ats_sources.md` |
-| Q-025 | done | 1 | Add offline same-company referral suggestions, preliminary eligibility context, clickable profiles, and one-click LinkedIn message copying to Gmail review rows | `discussions/015_gmail_offline_referrals.md` |
+| Q-025 | done | 1 | Add all ranked offline same-company referral suggestions, preliminary eligibility context, clickable profiles, and per-person LinkedIn message copying to Gmail review rows | `discussions/015_gmail_offline_referrals.md` |
 | Q-026 | done | 1 | Add an offline Network Reviews tab with all saved LinkedIn profiles, relevant reviewer ranking, profile links, and personalized copy-ready resume-review requests | `discussions/016_network_profile_reviews.md` |
 | Q-027 | done | 1 | Show all network rows and all 18 review columns, add reusable greeting/body templates, per-row copy actions, optional outreach tracking, and explicitly requested private email display | `discussions/017_network_review_columns_and_templates.md` |
 | Q-028 | done | 1 | Add explicit per-job official-JD research, separate eligibility analysis, private baseline-resume upload, and truth-preserving tailored DOCX download/optional Drive upload | `discussions/018_streamlit_retirement_and_job_intelligence.md` |
@@ -44,6 +44,15 @@ Alternative terminal values: `deferred`, `rejected`, `cancelled`, or `superseded
 | Q-030 | done | 1 | Keep all current Company Portal and ATS matches visible, classify new/changed/previously-seen rows, and support word/phrase-aware comma-separated titles or keywords globally | `discussions/020_global_current_matches_and_keyword_search.md` |
 | Q-031 | done | 1 | Resolve UUID-based Ashby jobs through the exact public feed record, prohibit related-job substitution, and ground every displayed skill in the selected JD | `discussions/021_exact_ashby_job_descriptions.md` |
 | Q-032 | done | 1 | Let the user justify exact missing JD skills, persist explicitly confirmed evidence privately, and add only those keywords to generated resume copies | `discussions/022_user_confirmed_skill_evidence.md` |
+| Q-033 | done | 1 | Compare transparent ATS keyword alignment before and after resume tailoring without claiming a proprietary employer ATS score | `discussions/023_before_after_ats_alignment.md` |
+| Q-034 | done | 1 | Organize generated documents by company and dated role while keeping professional neutral filenames for HR sharing | `discussions/024_application_document_storage.md` |
+| Q-035 | done | 1 | List and load earlier Gmail workbooks, allow status/notes tracking in their original files, and preserve cross-run deduplication | `discussions/025_gmail_run_history.md` |
+| Q-036 | done | 1 | Record privacy-safe Luna token/tool usage, calculate versioned API cost, show pre-run estimates and per-action/daily/monthly totals, and mirror the ledger to app-owned Drive | `discussions/026_ai_usage_cost_tracking.md` |
+| Q-037 | done | 1 | Recognize evidence-backed equivalent JD wording, place supported exact terms in relevant skill categories, and safely reframe supported resume sentences without changing facts | `discussions/027_evidence_backed_resume_tailoring.md` |
+| Q-038 | done | 1 | Refactor the flat Python source into production capability packages, enforce dependency boundaries, and make private runtime paths deployment-configurable | `discussions/028_production_package_architecture.md` |
+| Q-039 | done | 1 | Filter the official-employer selector by the canonical MNC, product, startup, mid-sized, and other-company registry groups while preserving cross-group selections | `discussions/029_company_category_filters.md` |
+| Q-040 | done | 1 | Make the app-owned Drive company registry authoritative, retain only a validated local cache, and recognize public Lever jobs embedded by custom careers pages | `discussions/030_drive_registry_and_embedded_ats.md` |
+| Q-041 | done | 1 | Keep source searches temporary and persist only explicitly tracked jobs in one canonical Drive application queue | `discussions/031_transient_search_and_application_queue.md` |
 
 ## Adding an item
 

@@ -5,13 +5,14 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+from dataclasses import replace
 from email.utils import parsedate_to_datetime
 from html.parser import HTMLParser
 from typing import Any
 from urllib.parse import urljoin, urlsplit
 from xml.etree import ElementTree
 
-from job_hunt.discovery.adapters import html_to_text
+from job_hunt.discovery.adapters import build_lever_job, html_to_text
 from job_hunt.discovery.http_client import PublicSourceError, SafeHttpClient
 from job_hunt.discovery.models import (
     DiscoveryFilters,
@@ -131,23 +132,30 @@ class _CareerHtmlParser(HTMLParser):
         self.links: list[tuple[str, str]] = []
         self._current_href = ""
         self._link_parts: list[str] = []
-        self._json_depth = 0
+        self._json_kind = ""
         self._json_parts: list[str] = []
         self.json_ld: list[str] = []
+        self.structured_json: list[str] = []
 
     def handle_starttag(self, tag, attrs):
         attributes = dict(attrs)
         if tag.casefold() == "a" and attributes.get("href"):
             self._current_href = str(attributes["href"])
             self._link_parts = []
-        if tag.casefold() == "script" and "ld+json" in str(attributes.get("type") or "").casefold():
-            self._json_depth = 1
-            self._json_parts = []
+        if tag.casefold() == "script":
+            script_type = str(attributes.get("type") or "").casefold()
+            script_id = str(attributes.get("id") or "").casefold()
+            if "ld+json" in script_type:
+                self._json_kind = "json_ld"
+                self._json_parts = []
+            elif script_id == "__next_data__" or script_type == "application/json":
+                self._json_kind = "structured_json"
+                self._json_parts = []
 
     def handle_data(self, data):
         if self._current_href:
             self._link_parts.append(data)
-        if self._json_depth:
+        if self._json_kind:
             self._json_parts.append(data)
 
     def handle_endtag(self, tag):
@@ -155,9 +163,10 @@ class _CareerHtmlParser(HTMLParser):
             self.links.append((self._current_href, clean_text(" ".join(self._link_parts))))
             self._current_href = ""
             self._link_parts = []
-        if tag.casefold() == "script" and self._json_depth:
-            self.json_ld.append("".join(self._json_parts))
-            self._json_depth = 0
+        if tag.casefold() == "script" and self._json_kind:
+            target = self.json_ld if self._json_kind == "json_ld" else self.structured_json
+            target.append("".join(self._json_parts))
+            self._json_kind = ""
             self._json_parts = []
 
 
@@ -172,6 +181,31 @@ def _walk_json_ld(value: Any):
         types = item_type if isinstance(item_type, list) else [item_type]
         if any(clean_text(item).casefold() == "jobposting" for item in types):
             yield value
+
+
+def _walk_mappings(value: Any):
+    if isinstance(value, list):
+        for item in value:
+            yield from _walk_mappings(item)
+    elif isinstance(value, dict):
+        yield value
+        for item in value.values():
+            yield from _walk_mappings(item)
+
+
+def _lever_job_identity(value: Any) -> tuple[str, str, str] | None:
+    url = canonical_public_url(value)
+    parsed = urlsplit(url)
+    host = (parsed.hostname or "").casefold()
+    if host not in {"jobs.lever.co", "jobs.eu.lever.co"}:
+        return None
+    parts = [part for part in parsed.path.split("/") if part]
+    if len(parts) < 2:
+        return None
+    slug, job_id = parts[:2]
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,199}", slug):
+        return None
+    return slug, job_id, ("eu" if host == "jobs.eu.lever.co" else "global")
 
 
 def _json_ld_location(value: Any) -> str:
@@ -224,7 +258,12 @@ class GenericPublicDiscovery:
                 warnings.append(str(exc))
             else:
                 if jobs:
-                    return jobs, "static_html", "; ".join(warnings)
+                    strategy = (
+                        "embedded_structured_json"
+                        if jobs[0].source_type == "official_embedded_ats_json"
+                        else "static_html"
+                    )
+                    return jobs, strategy, "; ".join(warnings)
 
             try:
                 jobs = self._sitemaps(source, page_url, filters, discovered_at)
@@ -315,6 +354,16 @@ class GenericPublicDiscovery:
         except Exception as exc:
             raise PublicSourceError("The public careers HTML could not be parsed safely.") from exc
 
+        embedded_jobs = self._embedded_lever_jobs(
+            parser.structured_json,
+            source,
+            filters,
+            discovered_at=discovered_at,
+            source_url=response.url,
+        )
+        if embedded_jobs:
+            return embedded_jobs
+
         jobs: list[DiscoveryJob] = []
         seen: set[str] = set()
         for script in parser.json_ld:
@@ -400,6 +449,54 @@ class GenericPublicDiscovery:
                 jobs.append(job)
                 if len(jobs) >= filters.max_jobs_per_source:
                     break
+        return jobs
+
+    def _embedded_lever_jobs(
+        self,
+        scripts: list[str],
+        source: SourceConfig,
+        filters: DiscoveryFilters,
+        *,
+        discovered_at: str,
+        source_url: str,
+    ) -> list[DiscoveryJob]:
+        jobs: list[DiscoveryJob] = []
+        seen: set[str] = set()
+        for script in scripts:
+            try:
+                value = json.loads(script)
+            except json.JSONDecodeError:
+                continue
+            for item in _walk_mappings(value):
+                urls = item.get("urls") if isinstance(item.get("urls"), dict) else {}
+                official_url = canonical_public_url(item.get("hostedUrl") or urls.get("show"))
+                identity = _lever_job_identity(official_url)
+                title = clean_text(item.get("text") or item.get("title"))
+                if identity is None or not title or official_url in seen:
+                    continue
+                slug, job_id, region = identity
+                normalized = dict(item)
+                normalized.setdefault("id", job_id)
+                detected_source = replace(
+                    source,
+                    provider="lever",
+                    identifier=slug,
+                    region=region,
+                )
+                job = build_lever_job(
+                    normalized,
+                    detected_source,
+                    filters,
+                    discovered_at=discovered_at,
+                    source_url=source_url,
+                    source_type="official_embedded_ats_json",
+                )
+                if job is None or not job.title or not self._passes(job, filters):
+                    continue
+                seen.add(official_url)
+                jobs.append(job)
+                if len(jobs) >= filters.max_jobs_per_source:
+                    return jobs
         return jobs
 
     def _sitemaps(

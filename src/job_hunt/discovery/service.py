@@ -24,7 +24,11 @@ from job_hunt.discovery.models import (
     canonical_public_url,
     clean_text,
 )
-from job_hunt.discovery.registry import CompanyRegistryEntry, load_company_registry
+from job_hunt.discovery.registry import (
+    CompanyRegistryEntry,
+    CompanyRegistryRepository,
+    load_company_registry,
+)
 from job_hunt.discovery.state import (
     classify_discovery_rows,
     normalize_discovery_state,
@@ -40,7 +44,6 @@ from job_hunt.discovery.workbook import (
     verify_discovery_workbook,
     write_discovery_workbook,
 )
-from job_hunt.gmail_service import AppPaths, GoogleConnectionService, TIME_ZONE
 from job_hunt.integrations.drive_storage import (
     build_drive_service,
     download_drive_file,
@@ -49,8 +52,10 @@ from job_hunt.integrations.drive_storage import (
     find_child_file,
     upload_or_update_file,
 )
-from job_hunt.local_state import load_local_state, save_local_state
-from job_hunt.private_io import read_json, write_json_atomic
+from job_hunt.runtime.google import GoogleConnectionService
+from job_hunt.runtime.paths import AppPaths, TIME_ZONE
+from job_hunt.runtime.state import load_local_state, save_local_state
+from job_hunt.runtime.files import read_json, write_json_atomic
 
 
 COMPANY_PORTALS = "company_portals"
@@ -154,6 +159,7 @@ class DiscoveryWorkflowService:
         google_connection: GoogleConnectionService,
         *,
         registry_loader: Callable[[Path], list[CompanyRegistryEntry]] = load_company_registry,
+        registry_repository: CompanyRegistryRepository | None = None,
         http_client_factory: Callable[[], SafeHttpClient] = SafeHttpClient,
         drive_service_factory: Callable[[Any], Any] = build_drive_service,
     ) -> None:
@@ -162,13 +168,27 @@ class DiscoveryWorkflowService:
         self.registry_loader = registry_loader
         self.http_client_factory = http_client_factory
         self.drive_service_factory = drive_service_factory
+        self.registry_repository = registry_repository or CompanyRegistryRepository(
+            paths,
+            google_connection,
+            registry_loader=registry_loader,
+            drive_service_factory=drive_service_factory,
+        )
         self._mutation_lock = threading.Lock()
 
     def registry(self) -> list[dict[str, Any]]:
-        return [entry.to_dict() for entry in self.registry_loader(self.paths.registry_path)]
+        return self.registry_snapshot()["companies"]
+
+    def registry_snapshot(self) -> dict[str, Any]:
+        snapshot = self.registry_repository.load()
+        return {
+            "companies": [entry.to_dict() for entry in snapshot.entries],
+            "count": len(snapshot.entries),
+            "registry_status": snapshot.metadata(),
+        }
 
     def _entries(self, company_ids: Iterable[str]) -> list[CompanyRegistryEntry]:
-        registry = self.registry_loader(self.paths.registry_path)
+        registry = self.registry_repository.load().entries
         by_id = {entry.company_id: entry for entry in registry}
         output: list[CompanyRegistryEntry] = []
         for company_id in company_ids:
@@ -183,7 +203,7 @@ class DiscoveryWorkflowService:
         return self.paths.project_root / "outputs" / suffix
 
     def _state_path(self, mode: str) -> Path:
-        return self.paths.secrets_root / STATE_FILES[mode]
+        return self.paths.runtime_root / STATE_FILES[mode]
 
     def _workbook_path(self, mode: str, run_started_at: datetime) -> Path:
         date_text = run_started_at.date().isoformat()
@@ -208,24 +228,6 @@ class DiscoveryWorkflowService:
             download_drive_file(drive_service, str(remote["id"]), state_path)
             local_value = read_json(state_path)
         return normalize_discovery_state(local_value), str((remote or {}).get("id") or "")
-
-    def _sync_registry(
-        self,
-        drive_service,
-        source_folder_id: str,
-        app_state: dict[str, Any],
-    ) -> None:
-        if not self.paths.registry_path.is_file():
-            return
-        source_ids = dict(app_state.get("drive_source_file_ids") or {})
-        uploaded = upload_or_update_file(
-            drive_service,
-            self.paths.registry_path,
-            parent_id=source_folder_id,
-            existing_file_id=source_ids.get(self.paths.registry_path.name),
-        )
-        source_ids[self.paths.registry_path.name] = str(uploaded["id"])
-        app_state["drive_source_file_ids"] = source_ids
 
     def _sync_seen_state(
         self,
@@ -394,6 +396,131 @@ class DiscoveryWorkflowService:
             checked_at=checked_at,
         )
 
+    def search(self, options: DiscoveryRunOptions) -> dict[str, Any]:
+        """Return current public matches without writing a workbook or seen-state file."""
+
+        options.validate()
+        if not self._mutation_lock.acquire(blocking=False):
+            raise RuntimeError("Another discovery search or application update is in progress.")
+        try:
+            return self._search_locked(options)
+        finally:
+            self._mutation_lock.release()
+
+    def _search_locked(self, options: DiscoveryRunOptions) -> dict[str, Any]:
+        run_started_at = datetime.now(TIME_ZONE).replace(microsecond=0)
+        run_id = f"search-{FILE_PREFIXES[options.mode]}-{uuid.uuid4().hex[:12]}"
+        checked_at = run_started_at.isoformat()
+        entries = self._entries(options.company_ids)
+        sources = [entry.to_source_config() for entry in entries]
+        sources.extend(options.manual_sources)
+
+        http = self.http_client_factory()
+        discovered: list[DiscoveryJob] = []
+        checks: list[SourceCheck] = []
+        source_by_record: dict[str, int] = {}
+        try:
+            for index, source in enumerate(sources):
+                try:
+                    if options.mode == COMPANY_PORTALS:
+                        jobs, check = self._company_source(
+                            source,
+                            options.filters,
+                            http,
+                            checked_at,
+                        )
+                    else:
+                        jobs, check = self._ats_source(
+                            source,
+                            options.filters,
+                            http,
+                            checked_at,
+                        )
+                except Exception as exc:  # one broken source must not cancel the search
+                    jobs = []
+                    check = self._check(
+                        source,
+                        strategy="source_error",
+                        source_url=(
+                            source.public_feed_url or source.portal_url or source.careers_url
+                        ),
+                        status="source_unavailable",
+                        jobs_found=0,
+                        warning=_safe_warning(exc),
+                        checked_at=checked_at,
+                    )
+                checks.append(check)
+                for job in jobs:
+                    discovered.append(job)
+                    source_by_record[job.job_record_id] = index
+        finally:
+            http.close()
+
+        deduplicated = _deduplicate_jobs(discovered)
+        rows = []
+        for job in deduplicated:
+            row = job.to_dict()
+            row["run_change_status"] = "current_result"
+            rows.append(row)
+
+        result_counts = [0 for _ in checks]
+        for row in rows:
+            index = source_by_record.get(str(row.get("job_record_id") or ""))
+            if index is not None and 0 <= index < len(result_counts):
+                result_counts[index] += 1
+        checks = [
+            replace(check, jobs_exported=result_counts[index])
+            for index, check in enumerate(checks)
+        ]
+
+        completed_at = datetime.now(TIME_ZONE).replace(microsecond=0).isoformat()
+        warning_count = sum(
+            1
+            for check in checks
+            if check.warning or check.status not in {"success", "no_matching_jobs"}
+        )
+        succeeded = sum(
+            1
+            for check in checks
+            if check.status in {"success", "success_with_fallback", "no_matching_jobs"}
+        )
+        summary: dict[str, Any] = {
+            "run_id": run_id,
+            "mode": options.mode,
+            "status": "completed_with_warnings" if warning_count else "completed",
+            "started_at": checked_at,
+            "finished_at": completed_at,
+            "sources_requested": len(sources),
+            "sources_checked": len(checks),
+            "sources_succeeded": succeeded,
+            "sources_needing_manual_review": len(checks) - succeeded,
+            "jobs_found": len(discovered),
+            "jobs_after_deduplication": len(rows),
+            "jobs_returned_this_search": len(rows),
+            "jobs_exported_this_run": 0,
+            "warnings": warning_count,
+            "keyword_filter": options.filters.keyword,
+            "location_filter": options.filters.location,
+            "posted_within_days": options.filters.posted_within_days,
+            "include_unknown_dates": options.filters.include_unknown_dates,
+            "max_jobs_per_source": options.filters.max_jobs_per_source,
+            "target_experience_min_years": options.filters.target_experience_min_years,
+            "target_experience_max_years": options.filters.target_experience_max_years,
+            "strict_experience_filter": options.filters.strict_experience_filter,
+            "persistence": "temporary_search",
+        }
+        return self._artifact_payload(
+            {
+                "run_id": run_id,
+                "mode": options.mode,
+                "run_started_at": checked_at,
+                "transient": True,
+            },
+            rows,
+            [check.to_dict() for check in checks],
+            summary,
+        )
+
     def run(self, options: DiscoveryRunOptions) -> dict[str, Any]:
         options.validate()
         if not self._mutation_lock.acquire(blocking=False):
@@ -421,7 +548,6 @@ class DiscoveryWorkflowService:
         source_folder_id = str(folders["source"]["id"])
         date_folder_id = str(folders["date"]["id"])
         app_state = load_local_state(self.paths.app_state_path)
-        self._sync_registry(drive_service, source_folder_id, app_state)
         seen_state, seen_state_file_id = self._load_seen_state(
             options.mode,
             drive_service,
@@ -715,12 +841,18 @@ class DiscoveryWorkflowService:
         source_checks: Iterable[Mapping[str, Any]],
         summary: Mapping[str, Any],
     ) -> dict[str, Any]:
+        transient = bool(metadata.get("transient"))
         return {
             "run_id": str(metadata.get("run_id") or summary.get("run_id") or ""),
             "mode": str(metadata.get("mode") or summary.get("mode") or ""),
             "run_started_at": str(metadata.get("run_started_at") or ""),
-            "file_name": Path(str(metadata.get("local_path") or "discovery.xlsx")).name,
+            "file_name": (
+                ""
+                if transient
+                else Path(str(metadata.get("local_path") or "discovery.xlsx")).name
+            ),
             "drive_url": str(metadata.get("drive_url") or ""),
+            "transient": transient,
             "summary": dict(summary),
             "rows": [dict(row) for row in rows],
             "source_checks": [dict(row) for row in source_checks],

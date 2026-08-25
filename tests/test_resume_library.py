@@ -4,9 +4,9 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from job_hunt.gmail_service import AppPaths
-from job_hunt.private_io import read_json
-from job_hunt.resume_library import DriveResumeLibrary
+from job_hunt.runtime.paths import AppPaths
+from job_hunt.runtime.files import read_json
+from job_hunt.resumes.library import DriveResumeLibrary
 from tests.docx_fixture import create_resume_docx
 
 
@@ -64,10 +64,10 @@ class DriveResumeLibraryTests(unittest.TestCase):
                 }
 
             with patch(
-                "job_hunt.resume_library.find_child_file",
+                "job_hunt.resumes.library.find_child_file",
                 return_value=None,
             ), patch(
-                "job_hunt.resume_library.upload_or_update_file",
+                "job_hunt.resumes.library.upload_or_update_file",
                 side_effect=fake_upload,
             ):
                 baseline_status = library.store_baseline(
@@ -129,6 +129,63 @@ class DriveResumeLibraryTests(unittest.TestCase):
                 library.store_baseline(b"plain text", "resume.txt")
             with self.assertRaisesRegex(ValueError, "Reference files"):
                 library.store_references([("reference.pdf", b"%PDF")])
+
+    def test_generated_documents_use_company_first_application_folders(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            library = self._library(root)
+            artifact = root / "Asrith_Ladi_AI_ML_Engineer_6Y.docx"
+            artifact.write_bytes(b"generated-resume")
+            folder_calls = []
+
+            def fake_ensure_folder(_drive, name, *, parent_id=None):
+                folder_calls.append((name, parent_id))
+                return {"id": f"folder-{len(folder_calls)}", "name": name}
+
+            with patch(
+                "job_hunt.resumes.library.ensure_job_hunt_folders",
+                return_value={"root": {"id": "job-hunt"}, "source": {"id": "source"}},
+            ), patch(
+                "job_hunt.resumes.library.ensure_folder",
+                side_effect=fake_ensure_folder,
+            ), patch(
+                "job_hunt.resumes.library.upload_or_update_file",
+                return_value={"id": "resume-file", "webViewLink": "https://drive.example/file"},
+            ) as upload:
+                result = library.upload_artifact(
+                    artifact,
+                    company_name="Sarvam AI",
+                    role_name="Agent Engineer / Platform",
+                    prepared_on="2026-08-17",
+                    mime_type=(
+                        "application/vnd.openxmlformats-officedocument."
+                        "wordprocessingml.document"
+                    ),
+                )
+
+            self.assertEqual(
+                folder_calls,
+                [
+                    ("Resumes", "job-hunt"),
+                    ("Sarvam AI", "folder-1"),
+                    ("2026-08-17_Agent_Engineer_Platform", "folder-2"),
+                ],
+            )
+            self.assertEqual(upload.call_args.kwargs["parent_id"], "folder-3")
+            self.assertEqual(
+                result["folder_path"],
+                "Job Hunt/Resumes/Sarvam AI/2026-08-17_Agent_Engineer_Platform",
+            )
+            self.assertEqual(result["folder_url"], "https://drive.google.com/drive/folders/folder-3")
+
+            with self.assertRaisesRegex(ValueError, "YYYY-MM-DD"):
+                library.upload_artifact(
+                    artifact,
+                    company_name="Sarvam AI",
+                    role_name="Agent Engineer",
+                    prepared_on="17-08-2026",
+                    mime_type="application/test",
+                )
 
 
 if __name__ == "__main__":

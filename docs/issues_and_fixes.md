@@ -192,7 +192,7 @@ This log records mistakes, project incidents, durable fixes, and prevention rule
 - Cause: The project environment lacks the render dependency and no LibreOffice or Poppler executable is available.
 - Fix: Initially used structural extraction only. The manual resume feature now verifies private DOCX files through Microsoft Word's invisible PDF export, renders every page locally, visually inspects all pages, and retains structural/evidence checks as a second layer.
 - Prevention: Require Word/LibreOffice open-and-render verification plus page inspection before claiming a generated resume is usable; keep contact-free extraction and OOXML integrity checks in automated tests.
-- Evidence/related task: `scripts/extract_resume_evidence.py`, `src/job_hunt/resume_docx.py`; Discussions 005 and 018.
+- Evidence/related task: `scripts/extract_resume_evidence.py`, `src/job_hunt/resumes/docx.py`; Discussions 005 and 018.
 
 ### I-017 — Cold-message verifier rejected the improved sign-off
 
@@ -203,7 +203,7 @@ This log records mistakes, project incidents, durable fixes, and prevention rule
 - Cause: Message generation changed from `Thanks` to the more human `Thank you for your time`, while the verifier still required the old exact ending.
 - Fix: Align the verifier with the new structured sign-off and rerun the same dated tracker; all 126 messages then passed.
 - Prevention: Treat message structure and its verification predicate as one contract, and update their regression expectations together.
-- Evidence/related task: `src/job_hunt/enrichment.py`, `scripts/build_production_tracker.py`, Discussion 008.
+- Evidence/related task: `src/job_hunt/jobs/enrichment.py`, `scripts/build_production_tracker.py`, Discussion 008.
 
 ### I-018 — Legacy seed marked new production alerts as already researched
 
@@ -258,7 +258,7 @@ This log records mistakes, project incidents, durable fixes, and prevention rule
 - Cause: Google Web OAuth redirect URIs are exact; migrating the HTTP boundary changes the callback even though the requested scopes do not change.
 - Fix: Add `http://localhost:8000/api/auth/google/callback` to the existing Web OAuth client's authorized redirect URIs, then reconnect once through React.
 - Prevention: Treat the callback URI as a deployment-specific setting, keep it in `JOB_HUNT_OAUTH_REDIRECT_URI`, and update Google Cloud before switching UI runtimes or hosts.
-- Evidence/related task: `backend/main.py`, `docs/setup/GOOGLE_ACCESS.md`; Discussion 013.
+- Evidence/related task: `src/job_hunt/api/main.py`, `docs/setup/GOOGLE_ACCESS.md`; Discussion 013.
 
 ### I-023 - ATS detection positional fields shifted into the wrong properties
 
@@ -324,7 +324,7 @@ This log records mistakes, project incidents, durable fixes, and prevention rule
 - Cause: Python's standard XML serializer removed unused namespace declarations from `w:document` even though `mc:Ignorable` still referenced those prefixes. The XML remained well formed but violated Word's compatibility expectations.
 - Fix: Preserve every original root `xmlns:*` declaration when serializing the edited `word/document.xml`, then regenerate the copy. Word opened the corrected document without repair and exported it successfully.
 - Prevention: Never treat ZIP/XML parsing as sufficient DOCX acceptance. Retain original compatibility namespaces and require a real Word/LibreOffice open/export plus visual page verification for the representative template.
-- Evidence/related task: `src/job_hunt/resume_docx.py`, `tests/test_resume_docx.py`; Discussion 018.
+- Evidence/related task: `src/job_hunt/resumes/docx.py`, `tests/test_resume_docx.py`; Discussion 018.
 
 ### I-029 - Related official job was scored as the selected job
 
@@ -335,4 +335,70 @@ This log records mistakes, project incidents, durable fixes, and prevention rule
 - Cause: Company discovery retained the correct employer URL, but the later Luna web-search call could not read that exact dynamic page and was allowed to return an `active_related` opening. The UI auto-selected the related candidate without making the identity difference prominent.
 - Fix: Resolve the exact UUID through Ashby's documented public Job Postings API, extract from that description without web search, require exact-description evidence per skill, cache by exact-source fingerprint, and prohibit related candidates whenever a selected official URL is present.
 - Prevention: Treat provider job identity as a hard boundary for JD/eligibility work; related roles may be discovery suggestions only and must never supply requirements or scores for another job.
-- Evidence/related task: `src/job_hunt/integrations/ashby_postings.py`, `src/job_hunt/integrations/openai_research.py`, `src/job_hunt/job_intelligence.py`; Discussion 021.
+- Evidence/related task: `src/job_hunt/integrations/ashby_postings.py`, `src/job_hunt/integrations/openai_research.py`, `src/job_hunt/intelligence/service.py`; Discussion 021.
+
+### I-030 - Empty incremental Gmail run hid earlier useful jobs in the UI
+
+- Date: 2026-08-17
+- Status: resolved
+- Area: Gmail cross-run history / Job Queue navigation
+- Symptom: After the first large Gmail run, later identical runs correctly exported few or zero changed jobs, but Job Queue exposed only the latest workbook and offered no way to reopen earlier results.
+- Cause: Cross-run fingerprinting intentionally withheld unchanged rows, while the React startup and backend artifact API tracked only `last_gmail_run` even though earlier timestamped workbooks remained on disk and Drive.
+- Fix: Add a sanitized durable run-history index, local-workbook backfill, list/load/download APIs, and a Previous Gmail runs menu that remains visible in the zero-row state. Loading an earlier artifact cannot alter deduplication.
+- Prevention: Treat incremental state and artifact navigation as separate concerns: deduplicate collection, but always retain a bounded, non-secret index of user-created run artifacts.
+- Evidence/related task: `src/job_hunt/gmail/state.py`, `src/job_hunt/gmail/service.py`, `frontend/src/JobQueueTab.tsx`; Discussion 025.
+
+### I-031 - Previous-run safeguard disabled valid application tracking
+
+- Date: 2026-08-17
+- Status: resolved
+- Area: Gmail run history / application status
+- Symptom: After loading an older Gmail workbook, Application status and Review notes were disabled for every job even though the user had not applied yet.
+- Cause: The initial history implementation incorrectly equated an older collection artifact with completed/read-only application work.
+- Fix: Keep the previous-run indicator, but enable status and notes and save only those two fields back to the selected original workbook. Rebuild all protected job evidence from the workbook, preserve fingerprint state, and do not replace the latest-run pointer.
+- Prevention: Separate collection immutability from application lifecycle edits; collection date never determines whether a candidate has reviewed or applied to a job.
+- Evidence/related task: `src/job_hunt/gmail/service.py`, `frontend/src/JobQueueTab.tsx`, `tests/test_gmail_service.py`; Discussion 025.
+
+### I-032 - Exact-only comparison treated documented equivalents as unsupported
+
+- Date: 2026-08-17
+- Status: resolved
+- Area: resume eligibility / tailored resume generation
+- Symptom: A JD term could appear as a gap and request user justification even when the active baseline documented the same capability using equivalent wording. Confirmed terms were also collected under a generic `Additional Skills` line, and work bullets were only reordered rather than carefully aligned to supported JD language.
+- Cause: Eligibility used a fixed profile and literal labels, while DOCX mutation supported only skill reordering plus one generic appended line. The planner had no validated bullet-rewrite contract.
+- Fix: Score against contact-free evidence from the active baseline when available, distinguish exact/equivalent/unsupported terms with an auditable local concept map, place supported terms under relevant skill headings, and allow a small set of source-bullet-specific Luna rewrites guarded by fact, metric, employer, contact, and similarity checks. Keep the literal before/after ATS estimate separate.
+- Prevention: Require evidence attribution for every newly inserted JD phrase, distinguish whole-resume support from sentence-level support, invalidate cached plans when the tailoring contract changes, and retain DOCX structural plus behavior tests.
+- Evidence/related task: `src/job_hunt/jobs/skills.py`, `src/job_hunt/intelligence/service.py`, `src/job_hunt/resumes/docx.py`, `tests/test_skill_alignment.py`, `tests/test_resume_docx.py`; Discussion 027.
+
+### I-033 - Local registry upload could overwrite a newer Drive edit
+
+- Date: 2026-08-20
+- Status: resolved
+- Area: company registry / deployment storage boundary
+- Symptom: Editing an official careers URL in the Drive registry did not reliably change the site, while every Gmail or discovery run could upload the older local workbook over that Drive file.
+- Cause: The repository workbook was treated as the read source and run setup synchronized in the wrong direction, local to Drive. The app had no Drive revision check or visible refresh action.
+- Fix: Make the app-created Drive workbook authoritative, compare its metadata/content checksum, download changed content to a candidate, validate all canonical tables before atomically replacing the private local cache, remove registry uploads from normal runs, and expose Drive status plus a manual refresh control in React.
+- Prevention: Keep source-of-truth direction explicit in storage services and tests; only seed Drive when the registry is absent, never overwrite it during ordinary processing, and retain the last validated cache when a remote download is invalid or unavailable.
+- Evidence/related task: `src/job_hunt/discovery/registry.py`, `src/job_hunt/discovery/service.py`, `src/job_hunt/gmail/service.py`, `frontend/src/RunSetupTab.tsx`, `tests/test_registry_sync.py`; Discussion 030.
+
+### I-034 - Search activity created permanent files before user intent
+
+- Date: 2026-08-20
+- Status: resolved
+- Area: search lifecycle / Drive persistence
+- Symptom: Every Gmail, Company Portal, or ATS search created another dated Drive workbook even when the user was only exploring and had not decided to track or apply to a job.
+- Cause: Collection artifacts and application state shared one run-oriented persistence boundary; the UI treated source execution as an export rather than a read-only search.
+- Fix: Add non-persisting search service/API paths, keep current results in React memory, and introduce one Drive-backed application queue that is updated only by Save for later, status, note, or confirmed-official-URL actions. Keep old Gmail workbooks as unchanged history.
+- Prevention: Model discovery results and tracked applications as different lifecycles. Tests must prove that search creates no workbook/seen-state output and that repeated explicit saves upsert one stable application record.
+- Evidence/related task: `src/job_hunt/runtime/application_queue.py`, `src/job_hunt/gmail/service.py`, `src/job_hunt/discovery/service.py`, `frontend/src/App.tsx`; Discussion 031.
+
+### I-035 - Updated search UI called a stale FastAPI process
+
+- Date: 2026-08-20
+- Status: resolved
+- Area: local runtime / frontend-backend compatibility
+- Symptom: Company Portal search reported `Method Not Allowed` even though the selected source was valid.
+- Cause: The newly built React bundle called `POST /api/search/company-portals`, but port 8000 was still owned by a pre-change Anaconda Python process whose route table did not include the transient-search endpoint.
+- Fix: Stop the stale process and start API version 0.4.0 from the project's `.venv`; verify the route with a real Sarvam `agent` search. The API client now translates a 404/405 from new search routes into an explicit UI/backend version-mismatch instruction.
+- Prevention: Restart FastAPI after backend route changes, launch it through the documented project virtual environment, and verify `/api/openapi.json` exposes the expected search method before UI acceptance.
+- Evidence/related task: `frontend/src/api.ts`, `src/job_hunt/api/main.py`; Discussion 031.

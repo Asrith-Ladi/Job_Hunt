@@ -4,7 +4,7 @@ from pathlib import Path
 
 from fastapi.testclient import TestClient
 
-from backend.main import create_app
+from job_hunt.api.main import create_app
 
 
 RUN = {
@@ -67,9 +67,32 @@ class _FakeWorkflow:
     def latest(self):
         return dict(RUN)
 
+    def history(self, limit=50):
+        return [
+            {
+                "run_id": "run_test",
+                "run_started_at": RUN["run_started_at"],
+                "file_name": RUN["file_name"],
+                "drive_url": RUN["drive_url"],
+                "rows_exported": 1,
+                "messages_read": 2,
+                "unique_jobs": 1,
+                "unchanged_jobs": 0,
+                "status": "completed",
+                "is_current": True,
+                "loadable": True,
+            }
+        ][:limit]
+
     def run(self, options):
         self.last_options = options
         return dict(RUN)
+
+    def search(self, options):
+        self.last_options = options
+        value = dict(RUN)
+        value.update({"file_name": "", "drive_url": "", "transient": True})
+        return value
 
     def get(self, run_id):
         if run_id != "run_test":
@@ -129,6 +152,36 @@ class _FakeNetwork:
         }
 
 
+class _FakeApplications:
+    def __init__(self):
+        self.saved = []
+
+    def list(self):
+        return {
+            "applications": list(self.saved),
+            "count": len(self.saved),
+            "updated_at": "",
+            "drive_url": "https://drive.example/application-queue",
+        }
+
+    def upsert(self, source, row, referral_candidates=()):
+        record = {
+            "application_id": "application-1",
+            "source": source,
+            "source_record_id": str(row.get("job_record_id") or "job-1"),
+            "saved_at": "2026-08-20T10:00:00+05:30",
+            "updated_at": "2026-08-20T10:00:00+05:30",
+            "row": dict(row),
+            "referral_candidates": list(referral_candidates),
+        }
+        self.saved = [record]
+        return {
+            "application": record,
+            "count": 1,
+            "drive_url": "https://drive.example/application-queue",
+        }
+
+
 class _FakeIntelligence:
     def __init__(self, root: Path):
         self.root = root
@@ -161,6 +214,15 @@ class _FakeIntelligence:
             "message": "",
             "manual_only": True,
             "contact_data_sent_to_openai": False,
+        }
+
+    def ai_usage(self, *, limit=20):
+        return {
+            "currency": "USD",
+            "calculated_not_invoice": True,
+            "today": {"api_calls": 1, "calculated_cost_usd": 0.0123},
+            "current_month": {"api_calls": 2, "calculated_cost_usd": 0.0246},
+            "recent_events": [{"event_id": "usage-test"}][:limit],
         }
 
     def store_baseline_resume(self, content, original_name):
@@ -210,6 +272,10 @@ class _FakeIntelligence:
                     ),
                     "drive_url": "https://drive.example/tailored",
                     "folder_url": "https://drive.example/Resumes",
+                    "folder_path": (
+                        "Job Hunt/Resumes/Example Company/"
+                        "2026-08-03_Senior_Machine_Learning_Engineer"
+                    ),
                 }
             ],
             "model": "gpt-test",
@@ -220,6 +286,12 @@ class _FakeIntelligence:
             "reference_points_used": [],
             "warnings": [],
             "requires_user_review": True,
+            "ats_alignment": {
+                "before": {"score": 60},
+                "after": {"score": 80},
+                "delta": 20,
+                "methodology": "Deterministic test fixture.",
+            },
             "baseline_unchanged": True,
         }
 
@@ -243,6 +315,7 @@ class ApiTests(unittest.TestCase):
         workbook.write_bytes(b"workbook")
         self.connection = _FakeConnection()
         self.workflow = _FakeWorkflow(workbook)
+        self.applications = _FakeApplications()
         self.intelligence = _FakeIntelligence(root)
         self.client = TestClient(
             create_app(
@@ -250,6 +323,7 @@ class ApiTests(unittest.TestCase):
                 google_connection=self.connection,
                 network_service=_FakeNetwork(),
                 job_intelligence_service=self.intelligence,
+                application_queue_service=self.applications,
                 static_dir=root / "missing-dist",
             )
         )
@@ -280,9 +354,13 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(response.json()["all_connections"], 1)
         self.assertEqual(response.json()["target_roles"], "Generative AI Engineer")
 
-    def test_run_request_maps_to_the_python_service(self):
+    def test_search_request_maps_to_the_python_service(self):
+        history = self.client.get("/api/gmail/runs")
+        self.assertEqual(history.status_code, 200)
+        self.assertEqual(history.json()["runs"][0]["run_id"], "run_test")
+
         response = self.client.post(
-            "/api/gmail/runs",
+            "/api/search/gmail",
             json={
                 "sources": ["linkedin"],
                 "labels_by_source": {"linkedin": "Job_Alerts/link_test"},
@@ -293,13 +371,42 @@ class ApiTests(unittest.TestCase):
             },
         )
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.json()["run"]["run_id"], "run_test")
+        self.assertTrue(response.json()["run"]["transient"])
+        self.assertEqual(response.json()["run"]["drive_url"], "")
         self.assertEqual(self.workflow.last_options.lookback_days, 7)
         self.assertEqual(self.workflow.last_options.sources, ("linkedin",))
 
-    def test_invalid_experience_range_is_rejected_before_a_run(self):
+    def test_application_queue_routes_persist_only_explicit_job_updates(self):
+        empty = self.client.get("/api/applications")
+        self.assertEqual(empty.status_code, 200)
+        self.assertEqual(empty.json()["count"], 0)
+
+        saved = self.client.put(
+            "/api/applications",
+            json={
+                "source": "gmail",
+                "row": {
+                    "job_record_id": "job-1",
+                    "company": "Example",
+                    "application_status": "saved",
+                },
+                "referral_candidates": [
+                    {
+                        "name": "Asha",
+                        "position": "ML Lead",
+                        "profile_url": "https://linkedin.example/asha",
+                        "message": "Please refer me.",
+                    }
+                ],
+            },
+        )
+        self.assertEqual(saved.status_code, 200)
+        self.assertEqual(saved.json()["application"]["row"]["application_status"], "saved")
+        self.assertEqual(self.client.get("/api/applications").json()["count"], 1)
+
+    def test_invalid_experience_range_is_rejected_before_a_search(self):
         response = self.client.post(
-            "/api/gmail/runs",
+            "/api/search/gmail",
             json={
                 "sources": ["linkedin"],
                 "target_experience_min_years": 8,
@@ -309,13 +416,12 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(response.status_code, 422)
         self.assertIsNone(self.workflow.last_options)
 
-    def test_edit_and_download_routes_keep_the_run_identity(self):
-        saved = self.client.put(
+    def test_legacy_history_is_downloadable_but_not_mutable_through_the_api(self):
+        disabled = self.client.put(
             "/api/gmail/runs/run_test/jobs",
             json={"rows": [{"job_record_id": "job-1", "company": "Edited"}]},
         )
-        self.assertEqual(saved.status_code, 200)
-        self.assertEqual(saved.json()["run"]["rows"][0]["company"], "Edited")
+        self.assertEqual(disabled.status_code, 404)
 
         download = self.client.get("/api/gmail/runs/run_test/download")
         self.assertEqual(download.status_code, 200)
@@ -335,6 +441,10 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(status.status_code, 200)
         self.assertTrue(status.json()["openai_configured"])
         self.assertNotIn("api_key", status.json())
+
+        usage = self.client.get("/api/job-intelligence/usage?limit=5")
+        self.assertEqual(usage.status_code, 200)
+        self.assertEqual(usage.json()["today"]["calculated_cost_usd"], 0.0123)
 
         analyzed = self.client.post(
             "/api/job-intelligence/analyze",
@@ -406,6 +516,7 @@ class ApiTests(unittest.TestCase):
             generated.json()["generation"]["artifacts"][0]["download_url"],
             "/api/job-intelligence/artifacts/artifact_example123/download",
         )
+        self.assertEqual(generated.json()["generation"]["ats_alignment"]["delta"], 20)
         self.assertEqual(
             self.intelligence.generation_options["confirmed_skill_evidence"][0]["skill"],
             "Context engineering",
