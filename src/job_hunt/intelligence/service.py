@@ -11,7 +11,11 @@ from pathlib import Path
 from typing import Any, Callable, Iterable, Mapping
 
 from job_hunt.intelligence.usage import AIUsageLedger
-from job_hunt.resumes.outputs import build_cover_letter_docx, convert_docx_to_pdf
+from job_hunt.resumes.outputs import (
+    build_cover_letter_docx,
+    build_job_description_docx,
+    convert_docx_to_pdf,
+)
 from job_hunt.jobs.enrichment import personal_resume_profile, score_official_posting
 from job_hunt.integrations.ashby_postings import (
     ExactPostingResolution,
@@ -20,6 +24,11 @@ from job_hunt.integrations.ashby_postings import (
 from job_hunt.integrations.openai_research import (
     OfficialJobResearcher,
     OpenAIResearchError,
+)
+from job_hunt.integrations.official_descriptions import (
+    OfficialDescriptionResolution,
+    clean_description,
+    resolve_official_description,
 )
 from job_hunt.intelligence.config import OpenAISettings, load_openai_settings
 from job_hunt.runtime.files import read_json, write_json_atomic
@@ -32,6 +41,8 @@ from job_hunt.resumes.docx import (
 )
 from job_hunt.resumes.library import (
     DOCX_MIME_TYPE,
+    JSON_MIME_TYPE,
+    MARKDOWN_MIME_TYPE,
     PDF_MIME_TYPE,
     DriveResumeLibrary,
 )
@@ -54,6 +65,10 @@ OUTPUT_RESUME_PDF = "resume_pdf"
 OUTPUT_COVER_LETTER = "cover_letter"
 APPLICATION_RESUME_STEM = "Asrith_Ladi_AI_ML_Engineer_6Y"
 APPLICATION_COVER_LETTER_NAME = f"{APPLICATION_RESUME_STEM}_Cover_Letter.docx"
+APPLICATION_JOB_DESCRIPTION_NAME = "Job_Description.md"
+APPLICATION_JOB_DESCRIPTION_DOCX_NAME = "Job_Description.docx"
+APPLICATION_DETAILS_NAME = "Application_Details.json"
+APPLICATION_PACKAGE_VERSION = 2
 SUPPORTED_OUTPUTS = frozenset(
     {OUTPUT_RESUME_DOCX, OUTPUT_RESUME_PDF, OUTPUT_COVER_LETTER}
 )
@@ -404,6 +419,16 @@ def _safe_identifier(value: object, prefix: str) -> str:
     if not re.fullmatch(rf"{re.escape(prefix)}[a-zA-Z0-9_-]{{8,80}}", text):
         raise ValueError("The requested generated artifact identifier is invalid.")
     return text
+
+
+def _markdown_table_value(value: object) -> str:
+    cleaned = re.sub(r"\s+", " ", str(value or "").strip()).replace("|", "\\|")
+    return cleaned or "Not available"
+
+
+def _markdown_bullets(values: Iterable[object]) -> str:
+    cleaned = [str(value).strip() for value in values if str(value).strip()]
+    return "\n".join(f"- {value}" for value in cleaned) or "- Not available"
 
 
 class ResumePlanner:
@@ -955,6 +980,10 @@ class JobIntelligenceService:
         usage_ledger=None,
         pdf_converter=convert_docx_to_pdf,
         cover_letter_builder=build_cover_letter_docx,
+        job_description_builder=build_job_description_docx,
+        description_resolver: (
+            Callable[[Mapping[str, Any]], OfficialDescriptionResolution] | None
+        ) = None,
     ) -> None:
         self.paths = paths
         self.google_connection = google_connection
@@ -969,6 +998,8 @@ class JobIntelligenceService:
         self.resume_library = resume_library or DriveResumeLibrary(paths, google_connection)
         self.pdf_converter = pdf_converter
         self.cover_letter_builder = cover_letter_builder
+        self.job_description_builder = job_description_builder
+        self.description_resolver = description_resolver or resolve_official_description
         self.root = paths.runtime_root / "job_intelligence"
         self.usage_ledger = usage_ledger or AIUsageLedger(
             self.root / "ai_usage.json",
@@ -1604,6 +1635,269 @@ class JobIntelligenceService:
             }
         finally:
             self._lock.release()
+
+    def archive_application_package(
+        self,
+        analysis_id: str,
+        official_job_id: str,
+        generation_id: str,
+        *,
+        source_job: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        """Archive verified job evidence beside generated documents after manual application."""
+
+        analysis = self._load_analysis(analysis_id)
+        posting = self._selected_posting(analysis, str(official_job_id).strip())
+        generation_id = _safe_identifier(generation_id, "generation_")
+        index = read_json(self.artifact_index_path, default={}) or {}
+        generated_records = [
+            dict(record)
+            for record in index.values()
+            if isinstance(record, Mapping)
+            and str(record.get("generation_id") or "") == generation_id
+            and str(record.get("analysis_id") or "") == analysis_id
+            and str(record.get("official_job_id") or "") == official_job_id
+        ]
+        if not generated_records:
+            raise FileNotFoundError(
+                "The generated resume package is unavailable. Generate documents again."
+            )
+
+        first_artifact = generated_records[0]
+        folder_id = str(first_artifact.get("folder_id") or "").strip()
+        folder_url = str(first_artifact.get("folder_url") or "").strip()
+        if not folder_id:
+            match = re.search(r"/folders/([A-Za-z0-9_-]+)", folder_url)
+            folder_id = match.group(1) if match else ""
+        folder_path = str(first_artifact.get("folder_path") or "").strip()
+        if not folder_id or not folder_path:
+            raise JobIntelligenceError(
+                "The generated resume folder cannot be verified. Generate documents again."
+            )
+        if any(
+            str(record.get("folder_id") or folder_id).strip() != folder_id
+            or str(record.get("folder_path") or folder_path).strip() != folder_path
+            for record in generated_records
+        ):
+            raise JobIntelligenceError(
+                "The generated documents do not share one verified Drive folder."
+            )
+
+        exact_description = clean_description(posting.get("description"))
+        collected_description = clean_description(
+            source_job.get("description")
+            or source_job.get("job_description")
+            or source_job.get("jd_text")
+        )
+        capture_warning = ""
+        if exact_description:
+            description = exact_description
+            description_source = "verified_official_description"
+            description_completeness = "full"
+        elif collected_description:
+            description = collected_description
+            description_source = "collected_source_description"
+            description_completeness = "partial"
+            capture_warning = (
+                "The saved text came from the discovery record and may omit sections from "
+                "the official job page."
+            )
+        else:
+            exact_resolution = self.exact_posting_resolver(posting)
+            exact_ats_description = clean_description(
+                (exact_resolution.posting or {}).get("description_html")
+                or (exact_resolution.posting or {}).get("description")
+            )
+            if exact_ats_description:
+                description = exact_ats_description
+                description_source = "captured_exact_ats_description"
+                description_completeness = "full"
+                capture_warning = exact_resolution.warning
+            else:
+                resolved = self.description_resolver(posting)
+                description = clean_description(resolved.description)
+                description_source = resolved.source
+                description_completeness = resolved.completeness
+                capture_warning = " ".join(
+                    value
+                    for value in (exact_resolution.warning, resolved.warning)
+                    if value
+                )
+            if not description:
+                description = clean_description(posting.get("description_summary"))
+                description_source = "verified_description_summary"
+                description_completeness = "summary_only"
+                capture_warning = " ".join(
+                    value
+                    for value in (
+                        capture_warning,
+                        (
+                            "Only a verified summary was available. Open the official URL "
+                            "before relying on this file as the complete JD."
+                        ),
+                    )
+                    if value
+                )
+
+        package_root = self.root / "application_packages" / generation_id
+        package_root.mkdir(parents=True, exist_ok=True)
+        details_path = package_root / APPLICATION_DETAILS_NAME
+        previous = read_json(details_path, default={}) or {}
+        now = datetime.now(TIME_ZONE).replace(microsecond=0)
+        applied_at = str(previous.get("applied_at") or now.isoformat())
+        job_details = {
+            key: posting.get(key)
+            for key in (
+                "official_job_id",
+                "company",
+                "title",
+                "location",
+                "experience_text",
+                "experience_min",
+                "experience_max",
+                "workplace_type",
+                "employment_type",
+                "active_status",
+                "requisition_id",
+                "published_at",
+                "official_url",
+                "description_summary",
+                "required_skills",
+                "preferred_skills",
+                "required_skill_evidence",
+                "preferred_skill_evidence",
+                "evidence_confidence",
+                "source_notes",
+                "eligibility",
+            )
+        }
+        source_context = {
+            key: _safe_text(source_job.get(key), 4096)
+            for key in (
+                "job_record_id",
+                "provider",
+                "alert_source",
+                "source_url",
+                "apply_url",
+                "source_confidence",
+                "match_type",
+                "matched_terms",
+                "experience_fit",
+            )
+            if _safe_text(source_job.get(key), 4096)
+        }
+        generated_documents = [
+            {
+                key: record.get(key)
+                for key in ("artifact_id", "kind", "file_name", "drive_url", "sha256")
+                if record.get(key)
+            }
+            for record in generated_records
+        ]
+        details = {
+            "schema_version": APPLICATION_PACKAGE_VERSION,
+            "application_status": "applied",
+            "applied_at": applied_at,
+            "updated_at": now.isoformat(),
+            "analysis_id": analysis_id,
+            "generation_id": generation_id,
+            "description_source": description_source,
+            "description_completeness": description_completeness,
+            "full_description_available": description_completeness == "full",
+            "capture_warning": capture_warning,
+            "description": description,
+            "job": job_details,
+            "source_context": source_context,
+            "generated_documents": generated_documents,
+        }
+        write_json_atomic(details_path, details)
+
+        markdown = "\n".join(
+            [
+                f"# {_safe_text(posting.get('title'), 500) or 'Job description'}",
+                "",
+                "| Field | Value |",
+                "| --- | --- |",
+                f"| Company | {_markdown_table_value(posting.get('company'))} |",
+                f"| Role | {_markdown_table_value(posting.get('title'))} |",
+                f"| Location | {_markdown_table_value(posting.get('location'))} |",
+                f"| Experience | {_markdown_table_value(posting.get('experience_text'))} |",
+                f"| Employment type | {_markdown_table_value(posting.get('employment_type'))} |",
+                f"| Workplace type | {_markdown_table_value(posting.get('workplace_type'))} |",
+                f"| Requisition ID | {_markdown_table_value(posting.get('requisition_id'))} |",
+                f"| Published | {_markdown_table_value(posting.get('published_at'))} |",
+                f"| Official URL | {_markdown_table_value(posting.get('official_url'))} |",
+                f"| Capture quality | {_markdown_table_value(description_completeness.replace('_', ' ').title())} |",
+                f"| Capture source | {_markdown_table_value(description_source.replace('_', ' ').title())} |",
+                "",
+                *(
+                    [f"> **Review note:** {capture_warning}", ""]
+                    if capture_warning
+                    else []
+                ),
+                "## Job description",
+                "",
+                description or "The public source did not provide description text.",
+                "",
+                (
+                    "This private evidence file was saved after the user confirmed a manual "
+                    "application. Eligibility, generated-document metadata, and application "
+                    "state remain in Application_Details.json."
+                ),
+                "",
+            ]
+        )
+        description_path = package_root / APPLICATION_JOB_DESCRIPTION_NAME
+        description_path.write_text(markdown, encoding="utf-8")
+        description_docx_path = package_root / APPLICATION_JOB_DESCRIPTION_DOCX_NAME
+        self.job_description_builder(
+            description_docx_path,
+            posting=posting,
+            description=description,
+            completeness=description_completeness,
+            description_source=description_source,
+            capture_warning=capture_warning,
+        )
+
+        if not self._lock.acquire(blocking=False):
+            raise JobIntelligenceError("Another job-intelligence action is already running.")
+        try:
+            package_files = []
+            for kind, local_path, mime_type in (
+                ("job_description_document", description_docx_path, DOCX_MIME_TYPE),
+                ("job_description", description_path, MARKDOWN_MIME_TYPE),
+                ("application_details", details_path, JSON_MIME_TYPE),
+            ):
+                uploaded = self.resume_library.upload_application_file(
+                    local_path,
+                    folder_id=folder_id,
+                    folder_url=folder_url,
+                    folder_path=folder_path,
+                    mime_type=mime_type,
+                )
+                package_files.append(
+                    {
+                        "kind": kind,
+                        "file_name": local_path.name,
+                        "sha256": hashlib.sha256(local_path.read_bytes()).hexdigest(),
+                        **uploaded,
+                    }
+                )
+        finally:
+            self._lock.release()
+
+        return {
+            "application_status": "applied",
+            "applied_at": applied_at,
+            "official_url": str(posting.get("official_url") or ""),
+            "description_source": description_source,
+            "description_completeness": description_completeness,
+            "full_description_available": details["full_description_available"],
+            "capture_warning": capture_warning,
+            "folder_url": folder_url,
+            "folder_path": folder_path,
+            "files": package_files,
+        }
 
     def artifact(self, artifact_id: str) -> tuple[Path, dict[str, Any]]:
         artifact_id = _safe_identifier(artifact_id, "artifact_")

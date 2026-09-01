@@ -17,6 +17,7 @@ from job_hunt.discovery.models import (
     SourceConfig,
     canonical_public_url,
     clean_text,
+    parse_iso_datetime,
 )
 
 
@@ -87,9 +88,7 @@ def _location_text(value: Any) -> str:
     return ", ".join(clean_text(part) for part in parts if clean_text(part))
 
 
-def _passes(job: DiscoveryJob, filters: DiscoveryFilters) -> bool:
-    if not filters.matches_text(job.title, job.description, job.department):
-        return False
+def _passes_non_relevance(job: DiscoveryJob, filters: DiscoveryFilters) -> bool:
     if not filters.matches_location(job.location):
         return False
     if not filters.matches_date(job.posted_at):
@@ -97,6 +96,35 @@ def _passes(job: DiscoveryJob, filters: DiscoveryFilters) -> bool:
     if filters.strict_experience_filter and job.experience_fit == "outside_target":
         return False
     return True
+
+
+def filter_and_rank_jobs(
+    jobs: list[DiscoveryJob],
+    filters: DiscoveryFilters,
+) -> list[DiscoveryJob]:
+    """Apply shared filters once, preserving why each result was selected."""
+
+    matched: list[DiscoveryJob] = []
+    for job in jobs:
+        relevance = filters.relevance_match(
+            title=job.title,
+            description=job.description,
+            department=job.department,
+        )
+        if relevance is None or not _passes_non_relevance(job, filters):
+            continue
+        match_type, terms, score = relevance
+        job.match_type = match_type
+        job.matched_terms = ", ".join(dict.fromkeys(terms))
+        job.match_score = score
+        matched.append(job)
+
+    def sort_key(job: DiscoveryJob) -> tuple[int, float, str, str]:
+        posted = parse_iso_datetime(job.posted_at)
+        timestamp = posted.timestamp() if posted else 0.0
+        return (-job.match_score, -timestamp, job.title.casefold(), job.official_url)
+
+    return sorted(matched, key=sort_key)[: filters.max_jobs_per_source]
 
 
 class AtsAdapter(ABC):
@@ -166,10 +194,8 @@ class GreenhouseAdapter(AtsAdapter):
                 discovered_at=discovered_at,
                 filters=filters,
             )
-            if job.title and _passes(job, filters):
+            if job.title:
                 results.append(job)
-                if len(results) >= filters.max_jobs_per_source:
-                    break
         return results
 
 
@@ -237,7 +263,7 @@ class LeverAdapter(AtsAdapter):
         scanned = 0
         skip = 0
         page_size = 100
-        while scanned < MAX_SCAN_JOBS and len(results) < filters.max_jobs_per_source:
+        while scanned < MAX_SCAN_JOBS:
             query = urlencode({"mode": "json", "skip": skip, "limit": page_size})
             page_url = f"{base}?{query}"
             payload = self.http.get(page_url, allowed_hosts=self.allowed_hosts).json()
@@ -251,10 +277,8 @@ class LeverAdapter(AtsAdapter):
                     discovered_at=discovered_at,
                     source_url=page_url,
                 )
-                if job is not None and job.title and _passes(job, filters):
+                if job is not None and job.title:
                     results.append(job)
-                    if len(results) >= filters.max_jobs_per_source:
-                        break
             scanned += len(page)
             if len(page) < page_size:
                 break
@@ -324,10 +348,8 @@ class WorkableAdapter(AtsAdapter):
                 discovered_at=discovered_at,
                 filters=filters,
             )
-            if job.title and _passes(job, filters):
+            if job.title:
                 results.append(job)
-                if len(results) >= filters.max_jobs_per_source:
-                    break
         return results
 
 
@@ -362,7 +384,7 @@ class SmartRecruitersAdapter(AtsAdapter):
         offset = 0
         page_size = 100
         scanned = 0
-        while scanned < MAX_SCAN_JOBS and len(results) < filters.max_jobs_per_source:
+        while scanned < MAX_SCAN_JOBS:
             page_url = f"{base}?{urlencode({'limit': page_size, 'offset': offset})}"
             payload = _mapping(self.http.get(page_url, allowed_hosts=self.allowed_hosts).json())
             page = _sequence(payload.get("content"))
@@ -372,9 +394,7 @@ class SmartRecruitersAdapter(AtsAdapter):
                 location = _location_text(item.get("location"))
                 posted_at = clean_text(item.get("releasedDate"))
                 department = clean_text(_mapping(item.get("department")).get("label"))
-                if not filters.matches_text(title, department) or not filters.matches_location(location):
-                    continue
-                if not filters.matches_date(posted_at):
+                if not filters.matches_location(location) or not filters.matches_date(posted_at):
                     continue
                 external_id = clean_text(item.get("id"))
                 if not external_id:
@@ -413,10 +433,8 @@ class SmartRecruitersAdapter(AtsAdapter):
                     discovered_at=discovered_at,
                     filters=filters,
                 )
-                if _passes(job, filters):
+                if job.title:
                     results.append(job)
-                    if len(results) >= filters.max_jobs_per_source:
-                        break
             scanned += len(page)
             total = int(payload.get("totalFound") or 0)
             offset += len(page)

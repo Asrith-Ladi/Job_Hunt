@@ -35,6 +35,7 @@ CATEGORY_SHEETS = (
     "Mid-Sized Companies",
     "Other Companies",
 )
+MINIMUM_COMPANY_COUNT = 210
 
 
 @dataclass(frozen=True)
@@ -158,9 +159,12 @@ def load_company_registry(path: Path) -> list[CompanyRegistryEntry]:
                     detection=detection,
                 )
             )
-    if len(entries) != 210:
+    if len(entries) < MINIMUM_COMPANY_COUNT:
         workbook.close()
-        raise ValueError(f"Expected 210 unique registry companies, found {len(entries)}.")
+        raise ValueError(
+            f"Expected at least {MINIMUM_COMPANY_COUNT} unique registry companies, "
+            f"found {len(entries)}."
+        )
     workbook.close()
     return entries
 

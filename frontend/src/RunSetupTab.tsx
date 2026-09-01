@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import type {
   AppConfig,
   CompanyRegistryEntry,
@@ -6,6 +6,7 @@ import type {
   ManualAtsSource,
   RegistryStatus,
   RunSettings,
+  SearchProgress,
 } from "./types";
 import { SOURCE_LABELS, type WorkspaceSource } from "./workspace";
 
@@ -64,6 +65,89 @@ function sourceCount(source: WorkspaceSource, value: RunSetupState): string {
   if (source === "company_portals") return `${value.companyIds.length} compan${value.companyIds.length === 1 ? "y" : "ies"}`;
   const count = value.atsCompanyIds.length + value.manualAtsSources.length;
   return `${count} public source${count === 1 ? "" : "s"}`;
+}
+
+const PROGRESS_STAGE_LABELS: Record<string, string> = {
+  starting: "Starting",
+  registry: "Loading registry",
+  source_fetch: "Opening source",
+  ats_api: "Reading public feed",
+  career_page: "Inspecting careers page",
+  source_fallback: "Trying fallback",
+  source_complete: "Source checked",
+  deduplicate: "Combining results",
+  gmail_read: "Reading Gmail labels",
+  gmail_fetch: "Downloading alert batches",
+  gmail_parse: "Parsing alerts",
+  gmail_deduplicate: "Removing duplicates",
+  gmail_filter: "Applying filters",
+  gmail_referrals: "Matching connections",
+  completed: "Completed",
+  failed: "Needs attention",
+};
+
+function elapsedText(startedAt: string, now: number): string {
+  const started = Date.parse(startedAt);
+  if (!Number.isFinite(started)) return "0s";
+  const seconds = Math.max(0, Math.floor((now - started) / 1000));
+  const minutes = Math.floor(seconds / 60);
+  return minutes ? `${minutes}m ${String(seconds % 60).padStart(2, "0")}s` : `${seconds}s`;
+}
+
+function SearchProgressPanel({ progress }: { progress: SearchProgress }) {
+  const [now, setNow] = useState(Date.now());
+  useEffect(() => {
+    if (progress.status !== "running") return undefined;
+    const timer = window.setInterval(() => setNow(Date.now()), 1000);
+    return () => window.clearInterval(timer);
+  }, [progress.status, progress.progress_id]);
+
+  const total = progress.total_items;
+  const completed = Math.min(progress.completed_items, total || progress.completed_items);
+  const percent = progress.status === "completed"
+    ? 100
+    : total > 0
+      ? Math.min(96, Math.round((completed / total) * 100))
+      : 8;
+  const events = [...progress.recent_events].reverse().slice(0, 4);
+  const source = SOURCE_LABELS[progress.source];
+
+  return (
+    <section className={`live-search-progress ${progress.status}`} role="status" aria-live="polite">
+      <div className="progress-heading-row">
+        <div className="progress-live-mark" aria-hidden="true"><span /></div>
+        <div>
+          <p className="eyebrow">Live search activity</p>
+          <h3>{progress.status === "running" ? `Searching ${source}` : progress.message}</h3>
+          <p>{progress.message}</p>
+        </div>
+        <span className={`progress-status-pill ${progress.status}`}>
+          {PROGRESS_STAGE_LABELS[progress.stage] ?? progress.stage.replaceAll("_", " ")}
+        </span>
+      </div>
+
+      <div className="progress-track" aria-label={`${percent}% complete`}>
+        <span style={{ width: `${percent}%` }} />
+      </div>
+
+      <div className="progress-facts">
+        <div><small>Currently checking</small><strong>{progress.current_item || "Finishing the search"}</strong></div>
+        <div><small>Completed</small><strong>{total ? `${completed} / ${total}` : completed}</strong></div>
+        <div><small>Matches so far</small><strong>{progress.matches_found}</strong></div>
+        <div><small>Active time</small><strong>{elapsedText(progress.started_at, now)}</strong></div>
+      </div>
+
+      {events.length > 0 && (
+        <div className="progress-event-strip" aria-label="Recent search steps">
+          {events.map((event, index) => (
+            <span className={index === 0 ? "current" : ""} key={`${event.at}:${event.stage}:${index}`}>
+              <i aria-hidden="true" />{event.message}
+            </span>
+          ))}
+        </div>
+      )}
+    </section>
+  );
 }
 
 function CompanySelector({
@@ -191,6 +275,7 @@ export default function RunSetupTab({
   onConnectGoogle,
   onRefreshRegistry,
   runningSource,
+  progress,
   outcomes,
 }: {
   config: AppConfig;
@@ -204,6 +289,7 @@ export default function RunSetupTab({
   onConnectGoogle: () => void;
   onRefreshRegistry: () => void;
   runningSource: WorkspaceSource | "";
+  progress: SearchProgress | null;
   outcomes: Partial<Record<WorkspaceSource, SourceOutcome>>;
 }) {
   const [manualDraft, setManualDraft] = useState<ManualAtsSource>(EMPTY_MANUAL);
@@ -252,9 +338,9 @@ export default function RunSetupTab({
     <main className="product-page run-setup-page">
       <section className="page-intro setup-intro">
         <div>
-          <p className="eyebrow">Focused job search</p>
-          <h2>Choose where today’s opportunities should come from.</h2>
-          <p>Searches are temporary and independent. Only jobs you save, annotate, or move to another application status are written to Drive.</p>
+          <p className="eyebrow">Start a focused search</p>
+          <h2>Find roles that fit your next move.</h2>
+          <p>Pick your sources, set your preferences, and review every match before saving it.</p>
         </div>
         <div className="intro-action-stack">
           <span className={`readiness-pill ${googleConnected ? "ready" : "blocked"}`}>
@@ -270,12 +356,19 @@ export default function RunSetupTab({
         </div>
       </section>
 
+      {progress && (running || progress.status === "failed") && (
+        <SearchProgressPanel progress={progress} />
+      )}
+
+      <div className="workflow-section-heading">
+        <span>1</span><div><p className="eyebrow">Choose sources</p><h3>Where should we look?</h3></div>
+      </div>
       <section className="source-selector-grid" aria-label="Sources to run">
         {(Object.keys(SOURCE_COPY) as WorkspaceSource[]).map((source) => {
           const copy = SOURCE_COPY[source];
           const outcome = outcomes[source];
           return (
-            <article className={`source-selector-card ${enabled.has(source) ? "selected" : ""}`} key={source}>
+            <article className={`source-selector-card ${enabled.has(source) ? "selected" : ""} ${runningSource === source ? "searching" : ""}`} key={source}>
               <label>
                 <input type="checkbox" checked={enabled.has(source)} onChange={() => toggleEnabled(source)} disabled={running} />
                 <span className="source-check-indicator">✓</span>
@@ -297,18 +390,25 @@ export default function RunSetupTab({
       <section className="setup-block common-filters-block">
         <div className="section-title-row">
           <div>
-            <p className="eyebrow">Shared intent</p>
-            <h3>What are you looking for?</h3>
+            <span className="section-step">2</span>
+            <p className="eyebrow">Your preferences</p>
+            <h3>What role fits you?</h3>
           </div>
           <p>{hasOfficialSources
-            ? "Official sources match any comma-separated title or keyword against available job evidence. Gmail keeps labeled alerts visible so nothing is silently lost."
-            : "Recency controls the Gmail lookback; experience controls fit labeling without hiding uncertain alerts."}</p>
+            ? "Add role titles and skills. Separate alternatives with commas."
+            : "Choose how recent and experienced the roles should be."}</p>
         </div>
         <div className="common-filter-grid">
           {hasOfficialSources && (
             <label className="field wide-field">
-              <span>Job titles or keywords <small>comma-separated alternatives</small></span>
-              <input value={value.discovery.keyword} placeholder="agent, data scientist, GenAI, MLOps, machine learning" onChange={(event) => patch({ discovery: { ...value.discovery, keyword: event.target.value } })} />
+              <span>Target role phrases <small>title match; comma-separated OR</small></span>
+              <input value={value.discovery.keyword} placeholder="AI agent engineer, machine learning engineer, applied scientist" onChange={(event) => patch({ discovery: { ...value.discovery, keyword: event.target.value } })} />
+            </label>
+          )}
+          {hasOfficialSources && (
+            <label className="field wide-field">
+              <span>Capabilities and JD terms <small>broad fallback; editable</small></span>
+              <input value={value.discovery.capability_keywords} placeholder="agentic AI, LLM, RAG, MLOps" onChange={(event) => patch({ discovery: { ...value.discovery, capability_keywords: event.target.value } })} />
             </label>
           )}
           {hasOfficialSources && (
@@ -317,50 +417,55 @@ export default function RunSetupTab({
               <input value={value.discovery.location} placeholder="Hyderabad, Bengaluru, remote" onChange={(event) => patch({ discovery: { ...value.discovery, location: event.target.value } })} />
             </label>
           )}
-          <label className="field">
-            <span>Recent days</span>
-            <input type="number" min="1" max="90" value={value.discovery.posted_within_days} onChange={(event) => updateRecency(Number(event.target.value))} />
-          </label>
-          <label className="field">
-            <span>Minimum experience</span>
-            <input type="number" min="0" step="0.5" value={value.discovery.target_experience_min_years} onChange={(event) => updateExperience(Number(event.target.value), value.discovery.target_experience_max_years)} />
-          </label>
-          <label className="field">
-            <span>Maximum experience</span>
-            <input type="number" min="0" step="0.5" value={value.discovery.target_experience_max_years} onChange={(event) => updateExperience(value.discovery.target_experience_min_years, Number(event.target.value))} />
-          </label>
-          {hasOfficialSources && (
-            <label className="field">
-              <span>Max jobs per official source</span>
-              <input type="number" min="1" max="250" value={value.discovery.max_jobs_per_source} onChange={(event) => patch({ discovery: { ...value.discovery, max_jobs_per_source: Number(event.target.value) } })} />
-            </label>
-          )}
         </div>
-        <div className="inline-options">
-          {hasOfficialSources && (
+        <details className="advanced advanced-search-filters">
+          <summary>Advanced filters: recency, experience, and source limits</summary>
+          <div className="common-filter-grid compact-grid">
+            <label className="field">
+              <span>Recent days</span>
+              <input type="number" min="1" max="90" value={value.discovery.posted_within_days} onChange={(event) => updateRecency(Number(event.target.value))} />
+            </label>
+            <label className="field">
+              <span>Minimum experience</span>
+              <input type="number" min="0" step="0.5" value={value.discovery.target_experience_min_years} onChange={(event) => updateExperience(Number(event.target.value), value.discovery.target_experience_max_years)} />
+            </label>
+            <label className="field">
+              <span>Maximum experience</span>
+              <input type="number" min="0" step="0.5" value={value.discovery.target_experience_max_years} onChange={(event) => updateExperience(value.discovery.target_experience_min_years, Number(event.target.value))} />
+            </label>
+            {hasOfficialSources && (
+              <label className="field">
+                <span>Max jobs per official source</span>
+                <input type="number" min="1" max="250" value={value.discovery.max_jobs_per_source} onChange={(event) => patch({ discovery: { ...value.discovery, max_jobs_per_source: Number(event.target.value) } })} />
+              </label>
+            )}
+          </div>
+          <div className="inline-options">
+            {hasOfficialSources && (
             <label className="toggle-row">
               <input type="checkbox" checked={value.discovery.include_unknown_dates} onChange={(event) => patch({ discovery: { ...value.discovery, include_unknown_dates: event.target.checked } })} />
               <span>Keep official jobs with unknown publication dates</span>
             </label>
-          )}
-          <label className="toggle-row">
-            <input
-              type="checkbox"
-              checked={value.discovery.strict_experience_filter}
-              onChange={(event) => patch({
-                discovery: { ...value.discovery, strict_experience_filter: event.target.checked },
-                gmail: { ...value.gmail, strict_experience_filter: event.target.checked },
-              })}
-            />
-            <span>Exclude roles known outside the experience range</span>
-          </label>
-        </div>
+            )}
+            <label className="toggle-row">
+              <input
+                type="checkbox"
+                checked={value.discovery.strict_experience_filter}
+                onChange={(event) => patch({
+                  discovery: { ...value.discovery, strict_experience_filter: event.target.checked },
+                  gmail: { ...value.gmail, strict_experience_filter: event.target.checked },
+                })}
+              />
+              <span>Exclude roles known outside the experience range</span>
+            </label>
+          </div>
+        </details>
       </section>
 
       {enabled.has("gmail") && (
         <section className="setup-block source-config-block">
           <div className="section-title-row">
-            <div><p className="eyebrow">Gmail configuration</p><h3>Approved alert labels</h3></div>
+            <div><span className="section-step">3</span><p className="eyebrow">Gmail details</p><h3>Choose alert inboxes</h3></div>
             <span className="safe-badge">Read only</span>
           </div>
           <div className="gmail-source-grid">
@@ -421,7 +526,7 @@ export default function RunSetupTab({
       {enabled.has("company_portals") && (
         <section className="setup-block source-config-block">
           <div className="section-title-row">
-            <div><p className="eyebrow">Company configuration</p><h3>Select official employers</h3></div>
+            <div><span className="section-step">3</span><p className="eyebrow">Company details</p><h3>Select official employers</h3></div>
             <span className="safe-badge">Maximum {config.discovery_max_sources_per_run}</span>
           </div>
           <div className={`registry-source-bar ${registryStatus?.warning ? "warning" : ""}`}>
@@ -454,7 +559,7 @@ export default function RunSetupTab({
       {enabled.has("ats_sources") && (
         <section className="setup-block source-config-block">
           <div className="section-title-row">
-            <div><p className="eyebrow">ATS configuration</p><h3>Select structured public feeds</h3></div>
+            <div><span className="section-step">3</span><p className="eyebrow">ATS details</p><h3>Select public job feeds</h3></div>
             <span className="safe-badge">No API keys</span>
           </div>
           <CompanySelector
@@ -487,10 +592,6 @@ export default function RunSetupTab({
         </section>
       )}
 
-      <section className="run-boundary-note">
-        <strong>Safe execution boundary</strong>
-        <span>No protected LinkedIn/Naukri scraping, employer login, application submission, automatic Luna call, or per-search Drive export runs here.</span>
-      </section>
     </main>
   );
 }

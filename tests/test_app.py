@@ -62,8 +62,10 @@ class AppQueryTests(unittest.TestCase):
             path = service._run_workbook_path(datetime(2026, 8, 1, 14, 30, 5))
         self.assertEqual(
             defaults["source_tabs"],
-            ["run_setup", "job_queue", "network_reviews"],
+            ["run_setup", "job_queue", "applications", "network_reviews"],
         )
+        self.assertIn("interviewing", defaults["application_statuses"])
+        self.assertIn("offer", defaults["application_statuses"])
         self.assertEqual(path.parent.name, "2026-08-01")
         self.assertEqual(path.name, "gmail_alerts_2026-08-01_143005.xlsx")
 

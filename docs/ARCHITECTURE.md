@@ -50,6 +50,27 @@ private caches must not be stored in Git or a public image layer. The normalized
 application tracker is intentionally persisted as `Job Hunt/Source/application_queue.json`;
 ordinary source searches never create Drive workbooks or update that file.
 
+React keeps two explicit job lifecycles over that boundary. **Results** renders only records
+from the current or deliberately loaded source run; saved fields are merged into matching
+records so prior decisions remain visible. **Applications** renders only records present in
+the canonical Drive queue. Both reuse the same review controls, but switching views creates
+no additional file and does not duplicate an application record.
+
+Generated artifact records retain the exact app-owned Drive folder ID. After the user confirms
+manual submission, job intelligence uploads fixed-name readable JD DOCX, clean JD Markdown,
+and structured JSON support files to that folder. It first reuses an exact public ATS record,
+then may make one bounded public official-page capture, and otherwise marks the evidence as a
+partial or summary-only fallback. The API then upserts the `applied` state, capture quality,
+and package links into the canonical application queue. Repeating the action replaces the
+same support files and repairs an interrupted queue update without creating a second
+application identity.
+
+Active search observability uses a bounded in-memory progress store under `runtime`. The
+original POST performs the search while React polls a random request ID for aggregate stage,
+current-source, count, and elapsed-time updates. Progress excludes Gmail/job/resume content,
+expires after 30 minutes, and is suitable for the current single-process personal deployment.
+A multi-worker deployment must replace it with an authenticated shared ephemeral store.
+
 When the wheel is installed outside the repository checkout, set `JOB_HUNT_PROJECT_ROOT`
 to the deployment directory containing `frontend/dist` and non-secret application assets.
 

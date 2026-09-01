@@ -21,6 +21,7 @@ Read documents in this order:
 
 ## Current discussion
 
+- `discussions/041_production_cleanup_and_release_pr.md` - active production cleanup, verification, and release PR.
 - `discussions/031_transient_search_and_application_queue.md` - active search and canonical application persistence lifecycle.
 - `discussions/018_streamlit_retirement_and_job_intelligence.md` - completed Streamlit retirement plus explicit official-JD, eligibility, and tailored-resume actions.
 - `discussions/013_react_fastapi_migration.md` - completed React/FastAPI migration; real per-tab acceptance runs remain useful before deployment.

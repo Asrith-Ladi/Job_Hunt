@@ -107,6 +107,7 @@ class OpenAIResearchTests(unittest.TestCase):
         )
 
         self.assertEqual(posting["required_skills"], ["AI agents", "Python"])
+        self.assertIn("Build production agents", posting["description"])
         self.assertNotIn("MCP", posting["required_skill_evidence"])
         self.assertEqual(posting["experience_min"], 3)
         self.assertIsNone(posting["experience_max"])

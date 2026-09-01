@@ -1,4 +1,4 @@
-"""Create cover-letter DOCX files and layout-preserving resume PDFs."""
+"""Create readable application DOCX files and layout-preserving resume PDFs."""
 
 from __future__ import annotations
 
@@ -131,6 +131,139 @@ def build_cover_letter_docx(
     closing.add_run("Sincerely,\n")
     closing_name = closing.add_run(name)
     closing_name.bold = True
+
+    pending = output_path.with_suffix(".pending.docx")
+    document.save(pending)
+    pending.replace(output_path)
+    return output_path
+
+
+def build_job_description_docx(
+    output_path: Path,
+    *,
+    posting: Mapping[str, Any],
+    description: str,
+    completeness: str,
+    description_source: str,
+    capture_warning: str = "",
+) -> Path:
+    """Build a human-readable job-description record beside application documents."""
+
+    Document, _, qn, Inches, Mm, Pt, RGBColor = _require_python_docx()
+    output_path = Path(output_path).resolve()
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    document = Document()
+    section = document.sections[0]
+    section.page_width = Mm(210)
+    section.page_height = Mm(297)
+    section.top_margin = Inches(0.7)
+    section.right_margin = Inches(0.75)
+    section.bottom_margin = Inches(0.7)
+    section.left_margin = Inches(0.75)
+
+    normal = document.styles["Normal"]
+    normal.font.name = "Calibri"
+    normal._element.rPr.rFonts.set(qn("w:ascii"), "Calibri")
+    normal._element.rPr.rFonts.set(qn("w:hAnsi"), "Calibri")
+    normal.font.size = Pt(10.5)
+    normal.paragraph_format.space_after = Pt(5)
+    normal.paragraph_format.line_spacing = 1.08
+
+    heading = document.add_paragraph()
+    heading.paragraph_format.space_after = Pt(2)
+    run = heading.add_run(str(posting.get("title") or "Job description").strip())
+    _set_run_font(
+        run,
+        qn=qn,
+        Pt=Pt,
+        RGBColor=RGBColor,
+        size=18,
+        color="0B2545",
+        bold=True,
+    )
+    company = " ".join(str(posting.get("company") or "").split())
+    if company:
+        company_line = document.add_paragraph()
+        company_line.paragraph_format.space_after = Pt(12)
+        company_run = company_line.add_run(company)
+        _set_run_font(
+            company_run,
+            qn=qn,
+            Pt=Pt,
+            RGBColor=RGBColor,
+            size=11,
+            color="276B63",
+            bold=True,
+        )
+
+    metadata = (
+        ("Location", posting.get("location")),
+        ("Experience", posting.get("experience_text")),
+        ("Employment", posting.get("employment_type")),
+        ("Workplace", posting.get("workplace_type")),
+        ("Requisition", posting.get("requisition_id")),
+        ("Published", posting.get("published_at")),
+        ("Official URL", posting.get("official_url")),
+        ("Capture quality", completeness.replace("_", " ").title()),
+        ("Capture source", description_source.replace("_", " ").title()),
+    )
+    table = document.add_table(rows=0, cols=2)
+    table.style = "Table Grid"
+    for label, value in metadata:
+        text = " ".join(str(value or "").split())
+        if not text:
+            continue
+        cells = table.add_row().cells
+        cells[0].text = label
+        cells[1].text = text
+        cells[0].paragraphs[0].runs[0].bold = True
+
+    if capture_warning:
+        warning = document.add_paragraph()
+        warning.paragraph_format.space_before = Pt(10)
+        warning.paragraph_format.space_after = Pt(8)
+        warning_run = warning.add_run(f"Review note: {capture_warning.strip()}")
+        _set_run_font(
+            warning_run,
+            qn=qn,
+            Pt=Pt,
+            RGBColor=RGBColor,
+            size=9.5,
+            color="8A5A00",
+            bold=True,
+        )
+
+    document.add_heading("Job description", level=1)
+    clean_description = str(description or "").strip()
+    if not clean_description:
+        document.add_paragraph("The public source did not provide description text.")
+    else:
+        for raw_line in clean_description.splitlines():
+            line = raw_line.strip()
+            if not line:
+                continue
+            if line.startswith("## "):
+                document.add_heading(line[3:].strip(), level=2)
+            elif line.startswith("# "):
+                document.add_heading(line[2:].strip(), level=2)
+            elif line.startswith(("- ", "• ", "* ")):
+                document.add_paragraph(line[2:].strip(), style="List Bullet")
+            else:
+                document.add_paragraph(line)
+
+    footer = section.footer.paragraphs[0]
+    footer.alignment = 1
+    footer_run = footer.add_run(
+        "Private application evidence · captured from the public official job source"
+    )
+    _set_run_font(
+        footer_run,
+        qn=qn,
+        Pt=Pt,
+        RGBColor=RGBColor,
+        size=8,
+        color="6B7280",
+    )
 
     pending = output_path.with_suffix(".pending.docx")
     document.save(pending)

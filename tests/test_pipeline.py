@@ -6,7 +6,7 @@ from job_hunt.gmail.pipeline import run_pipeline
 
 
 class FakeReader:
-    def list_alerts(self, query, max_messages=500):
+    def list_alerts(self, query, max_messages=500, progress_callback=None):
         return [
             AlertMessage(
                 message_id="m1",
@@ -45,7 +45,7 @@ class FakeStore:
 
 
 class OutsideExperienceReader:
-    def list_alerts(self, query, max_messages=500):
+    def list_alerts(self, query, max_messages=500, progress_callback=None):
         return [
             AlertMessage(
                 message_id="m-outside",
@@ -62,6 +62,19 @@ class OutsideExperienceReader:
 
 
 class PipelineTests(unittest.TestCase):
+    def test_pipeline_reports_safe_gmail_progress_without_message_content(self):
+        events = []
+        result = run_pipeline(
+            RunConfig(gmail_query="label:Job_Alerts/link_test", dry_run=True),
+            FakeReader(),
+            now="2026-07-19T02:00:00+00:00",
+            progress_callback=events.append,
+        )
+        stages = {event["stage"] for event in events}
+        self.assertTrue({"gmail_read", "gmail_parse", "gmail_deduplicate", "gmail_filter"} <= stages)
+        self.assertEqual(events[-1]["matches_found"], len(result.jobs))
+        self.assertNotIn("message_id", " ".join(str(event) for event in events))
+
     def test_dry_run_deduplicates_without_store(self):
         config = RunConfig(
             gmail_query=(

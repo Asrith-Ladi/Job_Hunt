@@ -647,6 +647,7 @@ class OfficialJobResearcher:
             "requisition_id": str(exact_source.get("external_job_id") or "").strip(),
             "published_at": str(exact_source.get("published_at") or "").strip(),
             "official_url": official_url,
+            "description": description,
             "description_summary": summary,
             "required_skills": required,
             "preferred_skills": preferred,

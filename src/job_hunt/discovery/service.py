@@ -9,7 +9,11 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, Iterable, Mapping
 
-from job_hunt.discovery.adapters import adapter_for, supported_providers
+from job_hunt.discovery.adapters import (
+    adapter_for,
+    filter_and_rank_jobs,
+    supported_providers,
+)
 from job_hunt.discovery.generic import GenericPublicDiscovery
 from job_hunt.discovery.http_client import (
     AccessStoppedError,
@@ -75,6 +79,13 @@ FILE_PREFIXES = {
     ATS_SOURCES: "ats_sources",
 }
 
+ProgressCallback = Callable[[Mapping[str, Any]], None]
+
+
+def _emit_progress(progress_callback: ProgressCallback | None, **values: Any) -> None:
+    if progress_callback is not None:
+        progress_callback(values)
+
 
 @dataclass(frozen=True)
 class DiscoveryRunOptions:
@@ -127,12 +138,14 @@ def _deduplicate_jobs(jobs: Iterable[DiscoveryJob]) -> list[DiscoveryJob]:
             continue
         existing_rank = (
             existing.source_type == "official_public_api",
+            existing.match_score,
             bool(existing.description),
             len(existing.description),
             bool(existing.posted_at),
         )
         candidate_rank = (
             job.source_type == "official_public_api",
+            job.match_score,
             bool(job.description),
             len(job.description),
             bool(job.posted_at),
@@ -142,6 +155,7 @@ def _deduplicate_jobs(jobs: Iterable[DiscoveryJob]) -> list[DiscoveryJob]:
     return sorted(
         selected.values(),
         key=lambda job: (
+            -job.match_score,
             job.company.casefold(),
             job.title.casefold(),
             job.location.casefold(),
@@ -288,12 +302,19 @@ class DiscoveryWorkflowService:
         filters: DiscoveryFilters,
         http: SafeHttpClient,
         checked_at: str,
+        progress_callback: ProgressCallback | None = None,
     ) -> tuple[list[DiscoveryJob], SourceCheck]:
         warning = ""
         if source.provider in supported_providers() and source.identifier:
             adapter = adapter_for(source.provider, http)
+            _emit_progress(
+                progress_callback,
+                stage="ats_api",
+                message=f"Fetching {source.company} from its public {source.provider.title()} feed.",
+                current_item=source.company,
+            )
             try:
-                jobs = adapter.fetch(source, filters)
+                extracted_jobs = adapter.fetch(source, filters)
             except AccessStoppedError as exc:
                 return [], self._check(
                     source,
@@ -306,26 +327,51 @@ class DiscoveryWorkflowService:
                 )
             except PublicSourceError as exc:
                 warning = _safe_warning(exc)
+                _emit_progress(
+                    progress_callback,
+                    stage="source_fallback",
+                    message=f"{source.company}: structured feed unavailable; checking official page fallbacks.",
+                    current_item=source.company,
+                )
             else:
+                jobs = filter_and_rank_jobs(extracted_jobs, filters)
                 return jobs, self._check(
                     source,
                     strategy="official_public_api",
                     source_url=adapter.endpoint(source),
                     status="success" if jobs else "no_matching_jobs",
-                    jobs_found=len(jobs),
+                    jobs_found=len(extracted_jobs),
                     warning="",
                     checked_at=checked_at,
                 )
 
         generic = GenericPublicDiscovery(http)
-        jobs, strategy, generic_warning = generic.discover(
+        _emit_progress(
+            progress_callback,
+            stage="career_page",
+            message=f"Inspecting {source.company}'s official careers page and embedded ATS signals.",
+            current_item=source.company,
+        )
+        outcome = generic.discover(
             source,
             filters,
             discovered_at=checked_at,
         )
-        warnings = "; ".join(value for value in [warning, generic_warning] if value)
+        jobs = filter_and_rank_jobs(outcome.jobs, filters)
+        warnings = "; ".join(value for value in [warning, outcome.warning] if value)
+        check_source = (
+            replace(
+                source,
+                provider=outcome.detected_provider,
+                identifier=outcome.detected_identifier,
+            )
+            if outcome.detected_provider
+            else source
+        )
         if jobs:
-            status = "success_with_fallback" if warning else "success"
+            status = "success_with_fallback" if warnings else "success"
+        elif outcome.jobs or outcome.detected_provider:
+            status = "no_matching_jobs"
         elif warnings:
             status = "manual_review_required"
         elif source.portal_url or source.careers_url or source.public_feed_url:
@@ -334,11 +380,16 @@ class DiscoveryWorkflowService:
             status = "manual_review_required"
             warnings = "No usable official public URL is configured for this company."
         return jobs, self._check(
-            source,
-            strategy=strategy,
-            source_url=(source.public_feed_url or source.portal_url or source.careers_url),
+            check_source,
+            strategy=outcome.strategy,
+            source_url=(
+                outcome.source_url
+                or source.public_feed_url
+                or source.portal_url
+                or source.careers_url
+            ),
             status=status,
-            jobs_found=len(jobs),
+            jobs_found=len(outcome.jobs),
             warning=warnings,
             checked_at=checked_at,
         )
@@ -349,6 +400,7 @@ class DiscoveryWorkflowService:
         filters: DiscoveryFilters,
         http: SafeHttpClient,
         checked_at: str,
+        progress_callback: ProgressCallback | None = None,
     ) -> tuple[list[DiscoveryJob], SourceCheck]:
         if source.provider not in supported_providers() or not source.identifier:
             return [], self._check(
@@ -364,8 +416,14 @@ class DiscoveryWorkflowService:
                 checked_at=checked_at,
             )
         adapter = adapter_for(source.provider, http)
+        _emit_progress(
+            progress_callback,
+            stage="ats_api",
+            message=f"Fetching {source.company} from its public {source.provider.title()} feed.",
+            current_item=source.company,
+        )
         try:
-            jobs = adapter.fetch(source, filters)
+            extracted_jobs = adapter.fetch(source, filters)
         except AccessStoppedError as exc:
             return [], self._check(
                 source,
@@ -386,31 +444,52 @@ class DiscoveryWorkflowService:
                 warning=_safe_warning(exc),
                 checked_at=checked_at,
             )
+        jobs = filter_and_rank_jobs(extracted_jobs, filters)
         return jobs, self._check(
             source,
             strategy="official_public_api",
             source_url=adapter.endpoint(source),
             status="success" if jobs else "no_matching_jobs",
-            jobs_found=len(jobs),
+            jobs_found=len(extracted_jobs),
             warning="",
             checked_at=checked_at,
         )
 
-    def search(self, options: DiscoveryRunOptions) -> dict[str, Any]:
+    def search(
+        self,
+        options: DiscoveryRunOptions,
+        *,
+        progress_callback: ProgressCallback | None = None,
+    ) -> dict[str, Any]:
         """Return current public matches without writing a workbook or seen-state file."""
 
         options.validate()
         if not self._mutation_lock.acquire(blocking=False):
             raise RuntimeError("Another discovery search or application update is in progress.")
         try:
-            return self._search_locked(options)
+            return self._search_locked(options, progress_callback=progress_callback)
         finally:
             self._mutation_lock.release()
 
-    def _search_locked(self, options: DiscoveryRunOptions) -> dict[str, Any]:
+    def _search_locked(
+        self,
+        options: DiscoveryRunOptions,
+        *,
+        progress_callback: ProgressCallback | None = None,
+    ) -> dict[str, Any]:
         run_started_at = datetime.now(TIME_ZONE).replace(microsecond=0)
         run_id = f"search-{FILE_PREFIXES[options.mode]}-{uuid.uuid4().hex[:12]}"
         checked_at = run_started_at.isoformat()
+        total_requested = len(options.company_ids) + len(options.manual_sources)
+        _emit_progress(
+            progress_callback,
+            stage="registry",
+            message="Loading selected companies and source configuration.",
+            current_item="Company registry",
+            completed_items=0,
+            total_items=total_requested,
+            matches_found=0,
+        )
         entries = self._entries(options.company_ids)
         sources = [entry.to_source_config() for entry in entries]
         sources.extend(options.manual_sources)
@@ -421,6 +500,20 @@ class DiscoveryWorkflowService:
         source_by_record: dict[str, int] = {}
         try:
             for index, source in enumerate(sources):
+                provider_label = (
+                    source.provider.title()
+                    if source.provider and source.provider != "generic"
+                    else "official careers page"
+                )
+                _emit_progress(
+                    progress_callback,
+                    stage="source_fetch",
+                    message=f"Checking {source.company} via {provider_label}.",
+                    current_item=source.company,
+                    completed_items=index,
+                    total_items=len(sources),
+                    matches_found=len(discovered),
+                )
                 try:
                     if options.mode == COMPANY_PORTALS:
                         jobs, check = self._company_source(
@@ -428,6 +521,7 @@ class DiscoveryWorkflowService:
                             options.filters,
                             http,
                             checked_at,
+                            progress_callback,
                         )
                     else:
                         jobs, check = self._ats_source(
@@ -435,6 +529,7 @@ class DiscoveryWorkflowService:
                             options.filters,
                             http,
                             checked_at,
+                            progress_callback,
                         )
                 except Exception as exc:  # one broken source must not cancel the search
                     jobs = []
@@ -453,9 +548,30 @@ class DiscoveryWorkflowService:
                 for job in jobs:
                     discovered.append(job)
                     source_by_record[job.job_record_id] = index
+                _emit_progress(
+                    progress_callback,
+                    stage="source_complete",
+                    message=(
+                        f"{source.company}: {check.jobs_found} extracted → "
+                        f"{len(jobs)} matched via {check.provider} ({check.strategy})."
+                    ),
+                    current_item=source.company,
+                    completed_items=index + 1,
+                    total_items=len(sources),
+                    matches_found=len(discovered),
+                )
         finally:
             http.close()
 
+        _emit_progress(
+            progress_callback,
+            stage="deduplicate",
+            message=f"Combining {len(discovered)} matches and removing duplicate official URLs.",
+            current_item="Unified result queue",
+            completed_items=len(sources),
+            total_items=len(sources),
+            matches_found=len(discovered),
+        )
         deduplicated = _deduplicate_jobs(discovered)
         rows = []
         for job in deduplicated:
@@ -495,11 +611,14 @@ class DiscoveryWorkflowService:
             "sources_succeeded": succeeded,
             "sources_needing_manual_review": len(checks) - succeeded,
             "jobs_found": len(discovered),
+            "jobs_extracted_before_filters": sum(check.jobs_found for check in checks),
+            "jobs_after_filters": len(discovered),
             "jobs_after_deduplication": len(rows),
             "jobs_returned_this_search": len(rows),
             "jobs_exported_this_run": 0,
             "warnings": warning_count,
             "keyword_filter": options.filters.keyword,
+            "capability_keyword_filter": options.filters.capability_keywords,
             "location_filter": options.filters.location,
             "posted_within_days": options.filters.posted_within_days,
             "include_unknown_dates": options.filters.include_unknown_dates,
@@ -632,6 +751,8 @@ class DiscoveryWorkflowService:
             "sources_succeeded": succeeded,
             "sources_needing_manual_review": len(checks) - succeeded,
             "jobs_found": len(discovered),
+            "jobs_extracted_before_filters": sum(check.jobs_found for check in checks),
+            "jobs_after_filters": len(discovered),
             "jobs_after_deduplication": len(deduplicated),
             "jobs_new_this_run": change_counts["new"],
             "jobs_changed_since_prior_run": change_counts["changed"],
@@ -642,6 +763,7 @@ class DiscoveryWorkflowService:
             "jobs_exported_this_run": len(current_rows),
             "warnings": warning_count,
             "keyword_filter": options.filters.keyword,
+            "capability_keyword_filter": options.filters.capability_keywords,
             "location_filter": options.filters.location,
             "posted_within_days": options.filters.posted_within_days,
             "include_unknown_dates": options.filters.include_unknown_dates,

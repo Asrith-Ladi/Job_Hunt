@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { api } from "./api";
 import JobIntelligencePanel from "./JobIntelligencePanel";
 import JobQueueTab from "./JobQueueTab";
@@ -15,6 +15,7 @@ import type {
   RunArtifact,
   RunSettings,
   SavedApplication,
+  SearchProgress,
   Scalar,
 } from "./types";
 import {
@@ -26,17 +27,33 @@ import {
   type WorkspaceSource,
 } from "./workspace";
 
-type ProductTab = "run_setup" | "job_queue" | "network_reviews";
+type ProductTab = "run_setup" | "job_queue" | "applications" | "network_reviews";
 type Notice = { kind: "success" | "error" | "info"; text: string };
+
+const TAB_META: Record<ProductTab, { eyebrow: string; title: string }> = {
+  run_setup: { eyebrow: "Find your next role", title: "Search" },
+  job_queue: { eyebrow: "Fresh matches", title: "Results" },
+  applications: { eyebrow: "Your job pipeline", title: "Applications" },
+  network_reviews: { eyebrow: "People who can help", title: "Network" },
+};
 
 function tabFromLocation(): ProductTab {
   const requested = new URLSearchParams(window.location.search).get("tab");
-  return requested === "job_queue" || requested === "network_reviews" ? requested : "run_setup";
+  return requested === "job_queue" || requested === "applications" || requested === "network_reviews"
+    ? requested
+    : "run_setup";
 }
 
 function summaryNumber(value: Scalar | undefined, fallback: number): number {
   const parsed = Number(value);
   return Number.isFinite(parsed) ? parsed : fallback;
+}
+
+function progressId(source: WorkspaceSource): string {
+  const random = typeof crypto.randomUUID === "function"
+    ? crypto.randomUUID()
+    : `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  return `${source}-${random}`;
 }
 
 const EMPTY_GMAIL_SETTINGS: RunSettings = {
@@ -56,8 +73,45 @@ const EMPTY_GMAIL_SETTINGS: RunSettings = {
   override_query: false,
 };
 
+const DEFAULT_ROLE_KEYWORDS = [
+  "AI engineer",
+  "AI/ML engineer",
+  "machine learning engineer",
+  "ML engineer",
+  "AI agent engineer",
+  "generative AI engineer",
+  "applied AI engineer",
+  "applied scientist",
+  "data scientist",
+  "MLOps engineer",
+  "ML platform engineer",
+  "NLP engineer",
+  "computer vision engineer",
+  "research engineer",
+  "forward deployed engineer",
+].join(", ");
+
+const DEFAULT_CAPABILITY_KEYWORDS = [
+  "artificial intelligence",
+  "machine learning",
+  "generative AI",
+  "GenAI",
+  "LLM",
+  "large language model",
+  "agentic AI",
+  "AI agents",
+  "RAG",
+  "MLOps",
+  "ML platform",
+  "NLP",
+  "natural language processing",
+  "computer vision",
+  "deep learning",
+].join(", ");
+
 const EMPTY_DISCOVERY_SETTINGS: DiscoveryFiltersSettings = {
-  keyword: "",
+  keyword: DEFAULT_ROLE_KEYWORDS,
+  capability_keywords: DEFAULT_CAPABILITY_KEYWORDS,
   location: "",
   posted_within_days: 30,
   include_unknown_dates: true,
@@ -95,6 +149,8 @@ function App() {
   const [gmailHistory, setGmailHistory] = useState<GmailRunHistoryEntry[]>([]);
   const [loadingHistoryRunId, setLoadingHistoryRunId] = useState("");
   const [runningSource, setRunningSource] = useState<WorkspaceSource | "">("");
+  const [searchProgress, setSearchProgress] = useState<SearchProgress | null>(null);
+  const activeProgressId = useRef("");
   const [outcomes, setOutcomes] = useState<Partial<Record<WorkspaceSource, SourceOutcome>>>({});
   const [savingJobIds, setSavingJobIds] = useState<Set<string>>(new Set());
   const [selectedJob, setSelectedJob] = useState<QueueItem | null>(null);
@@ -186,8 +242,9 @@ function App() {
       .finally(() => setLoading(false));
   }, []);
 
-  const queueCount = useMemo(
-    () => flattenRuns(runs, savedApplications).length,
+  const resultCount = useMemo(
+    () => flattenRuns(runs, savedApplications)
+      .filter((item) => item.runId !== "application_queue").length,
     [runs, savedApplications],
   );
   const currentSearchCount = useMemo(
@@ -254,7 +311,47 @@ function App() {
     if (setup.discovery.target_experience_max_years < setup.discovery.target_experience_min_years) {
       return "Maximum experience must be at least the minimum experience.";
     }
+    if (setup.discovery.posted_within_days < 1 || setup.discovery.posted_within_days > 90) {
+      return "Recent days must be between 1 and 90.";
+    }
     return "";
+  };
+
+  const beginProgressPolling = (id: string, source: WorkspaceSource) => {
+    const now = new Date().toISOString();
+    activeProgressId.current = id;
+    setSearchProgress({
+      progress_id: id,
+      source,
+      status: "running",
+      stage: "starting",
+      message: `Preparing ${SOURCE_LABELS[source]} search.`,
+      current_item: "Validating selected settings",
+      completed_items: 0,
+      total_items: 0,
+      matches_found: 0,
+      started_at: now,
+      updated_at: now,
+      recent_events: [],
+    });
+
+    const poll = async () => {
+      while (activeProgressId.current === id) {
+        try {
+          const response = await api.searchProgress(id);
+          if (activeProgressId.current === id) setSearchProgress(response.progress);
+        } catch {
+          // The POST may not have registered the progress ID yet; retry while active.
+        }
+        await new Promise((resolve) => window.setTimeout(resolve, 600));
+      }
+    };
+    void poll();
+  };
+
+  const finishProgressPolling = (id: string, finalProgress?: SearchProgress) => {
+    if (activeProgressId.current === id) activeProgressId.current = "";
+    if (finalProgress) setSearchProgress(finalProgress);
   };
 
   const runSelectedSources = async () => {
@@ -275,29 +372,52 @@ function App() {
     for (const source of setup.enabledSources) {
       setRunningSource(source);
       setOutcomes((current) => ({ ...current, [source]: { status: "running", message: "Searching" } }));
+      const activeId = progressId(source);
+      beginProgressPolling(activeId, source);
       try {
         let run: RunArtifact | DiscoveryRunArtifact;
+        let finalProgress: SearchProgress | undefined;
         if (source === "gmail") {
-          run = (await api.searchGmail(setup.gmail)).run;
+          const response = await api.searchGmail(setup.gmail, activeId);
+          run = response.run;
+          finalProgress = response.progress;
         } else if (source === "company_portals") {
-          run = (await api.searchDiscovery(source, setup.companyIds, [], setup.discovery)).run;
+          const response = await api.searchDiscovery(source, setup.companyIds, [], setup.discovery, activeId);
+          run = response.run;
+          finalProgress = response.progress;
         } else {
-          run = (await api.searchDiscovery(source, setup.atsCompanyIds, setup.manualAtsSources, setup.discovery)).run;
+          const response = await api.searchDiscovery(source, setup.atsCompanyIds, setup.manualAtsSources, setup.discovery, activeId);
+          run = response.run;
+          finalProgress = response.progress;
         }
+        finishProgressPolling(activeId, finalProgress);
         setRuns((current) => ({ ...current, [source]: run }));
         succeeded.push(source);
         const currentMatches = summaryNumber(
           run.summary.jobs_after_deduplication,
           run.rows.length,
         );
+        const extracted = summaryNumber(
+          run.summary.jobs_extracted_before_filters,
+          currentMatches,
+        );
         setOutcomes((current) => ({
           ...current,
           [source]: {
             status: "success",
-            message: `${currentMatches} temporary match${currentMatches === 1 ? "" : "es"}`,
+            message: source === "gmail"
+              ? `${currentMatches} temporary match${currentMatches === 1 ? "" : "es"}`
+              : `${extracted} extracted → ${currentMatches} matched`,
           },
         }));
       } catch (error) {
+        finishProgressPolling(activeId);
+        try {
+          const response = await api.searchProgress(activeId);
+          setSearchProgress(response.progress);
+        } catch {
+          // Preserve the locally visible error when no progress snapshot exists.
+        }
         failed.push(source);
         setOutcomes((current) => ({
           ...current,
@@ -344,6 +464,18 @@ function App() {
   };
 
   const persistQueueRow = async (item: QueueItem, column: string, value: Scalar) => {
+    const nextStatus = column === "application_status" ? scalarText(value) : "";
+    if (
+      ["applied", "interviewing", "offer"].includes(nextStatus)
+      && !scalarText(item.row.job_description_drive_url)
+    ) {
+      setSelectedJob(item);
+      setNotice({
+        kind: "info",
+        text: "Generate and review the application documents, then use ‘I applied — save JD & details’. This keeps every applied job linked to its Drive evidence package.",
+      });
+      return;
+    }
     const nextRow = { ...item.row, [column]: value };
     updateQueueRow(item, column, value);
     setSavingJobIds((current) => new Set(current).add(item.id));
@@ -375,6 +507,43 @@ function App() {
     }
   };
 
+  const acceptAppliedApplication = (
+    item: QueueItem,
+    application: SavedApplication,
+  ) => {
+    setSavedApplications((current) => [
+      application,
+      ...current.filter(
+        (candidate) => candidate.application_id !== application.application_id,
+      ),
+    ]);
+    const recordId = scalarText(item.row.job_record_id ?? item.row.external_job_id);
+    setRuns((current) => {
+      const run = current[item.source];
+      if (!run || run.run_id !== item.runId) return current;
+      const rows = run.rows.map((row) => {
+        const candidateId = scalarText(row.job_record_id ?? row.external_job_id);
+        return row === item.row || (recordId && candidateId === recordId)
+          ? { ...row, ...application.row }
+          : row;
+      });
+      return { ...current, [item.source]: { ...run, rows } };
+    });
+    setSelectedJob((current) => current?.id === item.id
+      ? {
+          ...current,
+          row: { ...current.row, ...application.row },
+          referralCandidates: application.referral_candidates,
+          persisted: true,
+          applicationId: application.application_id,
+        }
+      : current);
+    setNotice({
+      kind: "success",
+      text: "Application marked Applied. Its JD package is saved beside the generated resume in Drive.",
+    });
+  };
+
   const loadHistoricalGmailRun = async (runId: string) => {
     setLoadingHistoryRunId(runId);
     try {
@@ -397,8 +566,8 @@ function App() {
   if (loading) {
     return (
       <main className="loading-screen premium-loading">
-        <div className="brand-mark">JH</div>
-        <div><strong>Preparing your workspace</strong><span>Loading Drive state, source registry, and current queues…</span></div>
+        <div className="loading-brand" aria-hidden="true"><span>JH</span><i /><i /><i /></div>
+        <div className="loading-copy"><p className="eyebrow">Career workspace</p><strong>Preparing Job Hunt</strong><span>Bringing your searches and applications together…</span></div>
       </main>
     );
   }
@@ -416,23 +585,28 @@ function App() {
     );
   }
 
+  const activeTabMeta = TAB_META[activeTab];
+
   return (
     <div className="app app-shell">
       <aside className="app-sidebar">
         <div className="brand sidebar-brand">
           <div className="brand-mark">JH</div>
-          <div><p className="eyebrow">Personal workspace</p><h1>Job Hunt</h1></div>
+          <div><p className="eyebrow">Career workspace</p><h1>Job Hunt</h1></div>
         </div>
 
         <nav className="product-nav" aria-label="Primary navigation">
           <button className={activeTab === "run_setup" ? "active" : ""} type="button" onClick={() => navigateTo("run_setup")}>
-            <span className="nav-index">01</span><span><strong>Search</strong><small>Choose sources and search criteria</small></span>
+            <span className="nav-index">01</span><span><strong>Search</strong><small>Find matching roles</small></span>
           </button>
           <button className={activeTab === "job_queue" ? "active" : ""} type="button" onClick={() => navigateTo("job_queue")}>
-            <span className="nav-index">02</span><span><strong>Results</strong><small>{queueCount ? `${queueCount} searchable records` : "Review and track applications"}</small></span>
+            <span className="nav-index">02</span><span><strong>Results</strong><small>{resultCount ? `${resultCount} matches to review` : "Review new matches"}</small></span>
+          </button>
+          <button className={activeTab === "applications" ? "active" : ""} type="button" onClick={() => navigateTo("applications")}>
+            <span className="nav-index">03</span><span><strong>Applications</strong><small>{savedApplications.length ? `${savedApplications.length} jobs in your pipeline` : "Track your progress"}</small></span>
           </button>
           <button className={activeTab === "network_reviews" ? "active" : ""} type="button" onClick={() => navigateTo("network_reviews")}>
-            <span className="nav-index">03</span><span><strong>Network</strong><small>Reviewers and referral context</small></span>
+            <span className="nav-index">04</span><span><strong>Network</strong><small>Find relevant connections</small></span>
           </button>
         </nav>
 
@@ -441,6 +615,7 @@ function App() {
           <strong>{currentSearchCount} active search{currentSearchCount === 1 ? "" : "es"}</strong>
           <span>{savedApplications.length} permanently saved job{savedApplications.length === 1 ? "" : "s"}</span>
           <button type="button" onClick={() => navigateTo("run_setup")}>Start another search →</button>
+          <button type="button" onClick={() => navigateTo("applications")}>Open applications →</button>
         </div>
 
         <div className={`sidebar-connection ${google?.connected ? "connected" : "disconnected"}`}>
@@ -453,11 +628,11 @@ function App() {
       <section className="app-content">
         <header className="content-topbar">
           <div>
-            <p className="eyebrow">{activeTab === "run_setup" ? "Discovery control" : activeTab === "job_queue" ? "Daily application workflow" : "Offline LinkedIn export"}</p>
-            <strong>{activeTab === "run_setup" ? "Search" : activeTab === "job_queue" ? "Results & Applications" : "Network Reviews"}</strong>
+            <p className="eyebrow">{activeTabMeta.eyebrow}</p>
+            <strong>{activeTabMeta.title}</strong>
           </div>
           <div className="topbar-actions">
-            <span className="privacy-pill">Private · manual actions only</span>
+            <span className="privacy-pill">Private workspace</span>
             {config.drive_workspace_url && (
               <a href={config.drive_workspace_url} target="_blank" rel="noreferrer">
                 <span className="drive-link-desktop">Open Drive workspace</span>
@@ -488,10 +663,30 @@ function App() {
             onConnectGoogle={connectGoogle}
             onRefreshRegistry={refreshRegistry}
             runningSource={runningSource}
+            progress={searchProgress}
             outcomes={outcomes}
           />
         ) : activeTab === "job_queue" ? (
           <JobQueueTab
+            key="results"
+            mode="results"
+            config={config}
+            runs={runs}
+            savedApplications={savedApplications}
+            gmailHistory={gmailHistory}
+            loadingHistoryRunId={loadingHistoryRunId}
+            onUpdate={updateQueueRow}
+            onPersist={persistQueueRow}
+            savingJobIds={savingJobIds}
+            onOpenJob={setSelectedJob}
+            onLoadGmailRun={loadHistoricalGmailRun}
+            onGoToSetup={() => navigateTo("run_setup")}
+            onNotice={(text) => setNotice({ kind: "success", text })}
+          />
+        ) : activeTab === "applications" ? (
+          <JobQueueTab
+            key="applications"
+            mode="applications"
             config={config}
             runs={runs}
             savedApplications={savedApplications}
@@ -513,12 +708,15 @@ function App() {
       {selectedJob && (
         <JobIntelligencePanel
           job={selectedJob.row}
+          source={selectedJob.source}
+          referralCandidates={selectedJob.referralCandidates}
           googleConnected={Boolean(google?.connected)}
           onClose={() => setSelectedJob(null)}
           onOfficialUrl={(url) => {
             void persistQueueRow(selectedJob, "official_url", url);
             setSelectedJob((current) => current ? { ...current, row: { ...current.row, official_url: url } } : null);
           }}
+          onApplicationSaved={(application) => acceptAppliedApplication(selectedJob, application)}
         />
       )}
     </div>

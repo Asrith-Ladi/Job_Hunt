@@ -23,6 +23,7 @@ from job_hunt.gmail.service import (
     GmailWorkflowService,
     service_error_message,
 )
+from job_hunt.integrations.gmail import GmailApiError
 from job_hunt.network.service import (
     DEFAULT_TARGET_ROLES,
     MAX_TARGET_ROLES_LENGTH,
@@ -42,6 +43,7 @@ from job_hunt.discovery.service import (
 from job_hunt.runtime.google import GoogleConnectionService
 from job_hunt.runtime.application_queue import ApplicationQueueService
 from job_hunt.runtime.paths import AppPaths
+from job_hunt.runtime.search_progress import SearchProgressStore, validate_progress_id
 
 
 def _project_root() -> Path:
@@ -110,7 +112,8 @@ class ApplicationUpsertRequest(BaseModel):
 
 
 class DiscoveryFiltersRequest(BaseModel):
-    keyword: str = Field("", max_length=300)
+    keyword: str = Field("", max_length=500)
+    capability_keywords: str = Field("", max_length=500)
     location: str = Field("", max_length=300)
     posted_within_days: int = Field(15, ge=1, le=90)
     include_unknown_dates: bool = True
@@ -216,6 +219,12 @@ class ResumeGenerationRequest(BaseModel):
     refresh_plan: bool = False
 
 
+class ApplicationPackageRequest(ApplicationUpsertRequest):
+    analysis_id: str = Field(min_length=1, max_length=100)
+    official_job_id: str = Field(min_length=1, max_length=100)
+    generation_id: str = Field(min_length=1, max_length=100)
+
+
 def _frontend_origins() -> list[str]:
     configured = os.environ.get("JOB_HUNT_CORS_ORIGINS", "")
     values = [value.strip().rstrip("/") for value in configured.split(",") if value.strip()]
@@ -226,6 +235,8 @@ def _frontend_origins() -> list[str]:
 
 def _service_http_error(exc: Exception) -> HTTPException:
     message = service_error_message(exc)
+    if isinstance(exc, GmailApiError):
+        return HTTPException(status_code=502, detail=message)
     if isinstance(exc, FileNotFoundError):
         return HTTPException(status_code=404, detail=message)
     if isinstance(exc, ValueError):
@@ -243,6 +254,7 @@ def create_app(
     network_service: NetworkReviewService | None = None,
     job_intelligence_service: JobIntelligenceService | None = None,
     application_queue_service: ApplicationQueueService | None = None,
+    search_progress_store: SearchProgressStore | None = None,
     static_dir: Path | None = None,
 ) -> FastAPI:
     paths = AppPaths.from_project_root(PROJECT_ROOT)
@@ -252,6 +264,7 @@ def create_app(
     network = network_service or NetworkReviewService(paths.registry_path)
     intelligence = job_intelligence_service or JobIntelligenceService(paths, connection)
     applications = application_queue_service or ApplicationQueueService(paths, connection)
+    search_progress = search_progress_store or SearchProgressStore()
 
     application = FastAPI(
         title="Personal Job Hunt API",
@@ -277,8 +290,22 @@ def create_app(
         allow_origins=_frontend_origins(),
         allow_credentials=True,
         allow_methods=["GET", "POST", "PUT"],
-        allow_headers=["Content-Type"],
+        allow_headers=["Content-Type", "X-Job-Hunt-Progress-ID"],
     )
+
+    def request_progress_id(request: Request) -> str:
+        raw = request.headers.get("X-Job-Hunt-Progress-ID", "").strip()
+        if not raw:
+            return ""
+        try:
+            return validate_progress_id(raw)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    def progress_callback(progress_id: str):
+        if not progress_id:
+            return None
+        return lambda values: search_progress.update(progress_id, values)
 
     @application.get("/api/health")
     def health() -> dict[str, str]:
@@ -439,6 +466,46 @@ def create_app(
         except Exception as exc:
             raise _service_http_error(exc) from exc
 
+    @application.post("/api/job-intelligence/apply")
+    def archive_applied_job(payload: ApplicationPackageRequest):
+        try:
+            package = intelligence.archive_application_package(
+                payload.analysis_id,
+                payload.official_job_id,
+                payload.generation_id,
+                source_job=payload.row,
+            )
+            row = dict(payload.row)
+            row["application_status"] = "applied"
+            row["applied_at"] = package["applied_at"]
+            if package.get("official_url"):
+                row["official_url"] = package["official_url"]
+            row["application_package_folder_url"] = package["folder_url"]
+            row["application_package_folder_path"] = package["folder_path"]
+            row["job_description_source"] = package["description_source"]
+            row["job_description_completeness"] = package.get(
+                "description_completeness", "summary_only"
+            )
+            row["job_description_capture_warning"] = package.get("capture_warning", "")
+            for file in package.get("files") or []:
+                if file.get("kind") == "job_description_document":
+                    row["job_description_drive_url"] = file.get("drive_url") or ""
+                elif (
+                    file.get("kind") == "job_description"
+                    and not row.get("job_description_drive_url")
+                ):
+                    row["job_description_drive_url"] = file.get("drive_url") or ""
+                elif file.get("kind") == "application_details":
+                    row["application_details_drive_url"] = file.get("drive_url") or ""
+            application_result = applications.upsert(
+                payload.source,
+                row,
+                [item.model_dump() for item in payload.referral_candidates],
+            )
+            return {"package": package, **application_result}
+        except Exception as exc:
+            raise _service_http_error(exc) from exc
+
     @application.get("/api/job-intelligence/artifacts/{artifact_id}/download")
     def download_generated_document(artifact_id: str):
         try:
@@ -503,12 +570,50 @@ def create_app(
         except Exception as exc:
             raise _service_http_error(exc) from exc
 
-    @application.post("/api/search/gmail")
-    def search_gmail(payload: GmailRunRequest):
+    @application.get("/api/search/progress/{progress_id}")
+    def get_search_progress(progress_id: str):
         try:
-            return {"run": workflow.search(payload.to_options())}
+            snapshot = search_progress.get(progress_id)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        if snapshot is None:
+            raise HTTPException(status_code=404, detail="Search progress is not available.")
+        return {"progress": snapshot}
+
+    @application.post("/api/search/gmail")
+    def search_gmail(payload: GmailRunRequest, request: Request):
+        progress_id = request_progress_id(request)
+        if progress_id:
+            search_progress.start(
+                progress_id,
+                source="gmail",
+                message="Preparing the approved Gmail alert search.",
+                total_items=len(payload.sources),
+            )
+        try:
+            options = payload.to_options()
+            run = (
+                workflow.search(options, progress_callback=progress_callback(progress_id))
+                if progress_id
+                else workflow.search(options)
+            )
         except Exception as exc:
+            if progress_id:
+                search_progress.finish(
+                    progress_id,
+                    status="failed",
+                    message="Gmail search stopped. Review the visible error and try again.",
+                )
             raise _service_http_error(exc) from exc
+        final_progress = None
+        if progress_id:
+            final_progress = search_progress.finish(
+                progress_id,
+                status="completed",
+                message=f"Gmail search completed with {len(run.get('rows') or [])} results.",
+                matches_found=len(run.get("rows") or []),
+            )
+        return {"run": run, "progress": final_progress}
 
     @application.get("/api/gmail/runs/{run_id}")
     def get_gmail_run(run_id: str):
@@ -536,11 +641,42 @@ def create_app(
             raise _service_http_error(exc) from exc
         return {"run": artifact}
 
-    def search_discovery(mode: str, payload: DiscoveryRunRequest):
+    def search_discovery(mode: str, payload: DiscoveryRunRequest, request: Request):
+        progress_id = request_progress_id(request)
+        source_name = "company_portals" if mode == COMPANY_PORTALS else "ats_sources"
+        source_label = "company portal" if mode == COMPANY_PORTALS else "ATS"
+        total_items = len(payload.company_ids) + len(payload.manual_sources)
+        if progress_id:
+            search_progress.start(
+                progress_id,
+                source=source_name,
+                message=f"Preparing {total_items} selected {source_label} source(s).",
+                total_items=total_items,
+            )
         try:
-            return {"run": discovery.search(payload.to_options(mode))}
+            options = payload.to_options(mode)
+            run = (
+                discovery.search(options, progress_callback=progress_callback(progress_id))
+                if progress_id
+                else discovery.search(options)
+            )
         except Exception as exc:
+            if progress_id:
+                search_progress.finish(
+                    progress_id,
+                    status="failed",
+                    message=f"{source_label.title()} search stopped. Review the visible error.",
+                )
             raise _service_http_error(exc) from exc
+        final_progress = None
+        if progress_id:
+            final_progress = search_progress.finish(
+                progress_id,
+                status="completed",
+                message=f"{source_label.title()} search completed with {len(run.get('rows') or [])} results.",
+                matches_found=len(run.get("rows") or []),
+            )
+        return {"run": run, "progress": final_progress}
 
     def get_discovery_run(mode: str, run_id: str):
         try:
@@ -564,13 +700,13 @@ def create_app(
         return latest_discovery_run(COMPANY_PORTALS)
 
     @application.post("/api/search/company-portals")
-    def search_company_portals(payload: DiscoveryRunRequest):
+    def search_company_portals(payload: DiscoveryRunRequest, request: Request):
         if payload.manual_sources:
             raise HTTPException(
                 status_code=422,
                 detail="Manual ATS identifiers belong in the ATS Sources tab.",
             )
-        return search_discovery(COMPANY_PORTALS, payload)
+        return search_discovery(COMPANY_PORTALS, payload, request)
 
     @application.get("/api/company-portals/runs/{run_id}")
     def get_company_portal_run(run_id: str):
@@ -585,8 +721,8 @@ def create_app(
         return latest_discovery_run(ATS_SOURCES)
 
     @application.post("/api/search/ats-sources")
-    def search_ats_sources(payload: DiscoveryRunRequest):
-        return search_discovery(ATS_SOURCES, payload)
+    def search_ats_sources(payload: DiscoveryRunRequest, request: Request):
+        return search_discovery(ATS_SOURCES, payload, request)
 
     @application.get("/api/ats-sources/runs/{run_id}")
     def get_ats_run(run_id: str):

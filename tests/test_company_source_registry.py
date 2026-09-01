@@ -36,6 +36,24 @@ class CompanySourceRegistryTests(unittest.TestCase):
                 self.assertEqual(sheet.freeze_panes, "A5")
                 self.assertIsNone(sheet.auto_filter.ref)
                 self.assertIn(TABLE_NAMES[sheet_name], sheet.tables)
+                formatting = {
+                    str(key.sqref): [
+                        formula
+                        for rule in rules
+                        for formula in (rule.formula or [])
+                    ]
+                    for key, rules in sheet.conditional_formatting._cf_rules.items()
+                }
+                row_range = f"A5:O{sheet.max_row}"
+                self.assertIn(row_range, formatting)
+                self.assertIn(
+                    'LEFT($M5,12)="Inaccessible"',
+                    formatting[row_range],
+                )
+                self.assertIn(
+                    'LEFT($M5,15)="Manual required"',
+                    formatting[row_range],
+                )
                 for row in range(5, sheet.max_row + 1):
                     company = str(sheet.cell(row, 1).value)
                     normalized = company.casefold()
@@ -44,7 +62,7 @@ class CompanySourceRegistryTests(unittest.TestCase):
                     self.assertIsNotNone(sheet.cell(row, 4).hyperlink)
                     self.assertIsNotNone(sheet.cell(row, 5).hyperlink)
 
-            self.assertEqual(len(seen), 210)
+            self.assertEqual(len(seen), 246)
             coverage = workbook["Coverage"]
             self.assertEqual(coverage.freeze_panes, "A6")
             self.assertEqual(coverage.auto_filter.ref, "A5:G10")
@@ -73,9 +91,9 @@ class CompanySourceRegistryTests(unittest.TestCase):
     def test_expected_category_sizes_and_representative_adapters(self):
         expected_counts = {
             "MNC": 65,
-            "Product Companies": 75,
-            "Startups": 25,
-            "Mid-Sized Companies": 25,
+            "Product Companies": 87,
+            "Startups": 37,
+            "Mid-Sized Companies": 37,
             "Other Companies": 20,
         }
         self.assertEqual(
@@ -94,6 +112,24 @@ class CompanySourceRegistryTests(unittest.TestCase):
         )
         self.assertEqual(rows["Startups"]["Groww"].source_type, "Greenhouse")
         self.assertIn("greenhouse.io", rows["Startups"]["Groww"].jobs_url)
+        self.assertEqual(rows["Product Companies"]["Paytm"].source_type, "Lever")
+        self.assertEqual(
+            rows["Product Companies"]["IndiaMART"].source_type,
+            "SmartRecruiters",
+        )
+        self.assertEqual(rows["Startups"]["Sprinto"].source_type, "Lever")
+        self.assertEqual(
+            rows["Mid-Sized Companies"]["Mindtickle"].source_type,
+            "SmartRecruiters",
+        )
+        self.assertEqual(
+            rows["Mid-Sized Companies"]["Redis"].source_type,
+            "Company-hosted jobs portal",
+        )
+        self.assertIn(
+            "redis.io/company/careers/current-job-openings",
+            rows["Mid-Sized Companies"]["Redis"].jobs_url,
+        )
         self.assertIn("Cohesity", rows["Mid-Sized Companies"])
         self.assertIn("Fractal Analytics", rows["Other Companies"])
 
@@ -106,7 +142,7 @@ class CompanySourceRegistryTests(unittest.TestCase):
                 assignments[key] = category
                 self.assertTrue(company.careers_url.startswith("https://"))
                 self.assertTrue(company.jobs_url.startswith("https://"))
-        self.assertEqual(len(assignments), 210)
+        self.assertEqual(len(assignments), 246)
 
 
 if __name__ == "__main__":

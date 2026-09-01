@@ -53,6 +53,16 @@ Alternative terminal values: `deferred`, `rejected`, `cancelled`, or `superseded
 | Q-039 | done | 1 | Filter the official-employer selector by the canonical MNC, product, startup, mid-sized, and other-company registry groups while preserving cross-group selections | `discussions/029_company_category_filters.md` |
 | Q-040 | done | 1 | Make the app-owned Drive company registry authoritative, retain only a validated local cache, and recognize public Lever jobs embedded by custom careers pages | `discussions/030_drive_registry_and_embedded_ats.md` |
 | Q-041 | done | 1 | Keep source searches temporary and persist only explicitly tracked jobs in one canonical Drive application queue | `discussions/031_transient_search_and_application_queue.md` |
+| Q-042 | discussion | 1 | Build a private, deduplicated official-JD evidence library and deterministic Market Insights view | `discussions/032_job_description_market_library.md` |
+| Q-043 | done | 1 | Detect supported public ATS boards embedded on custom careers pages, separate title phrases from JD capabilities, rank title evidence first, and expose extracted-to-matched counts | `discussions/033_embedded_ats_and_ranked_search.md` |
+| Q-044 | done | 1 | Show live, source-safe search stages, current item, completed count, matches, elapsed time, and recent progress for Gmail, company portals, and ATS sources | `discussions/034_live_search_progress.md` |
+| Q-045 | done | 1 | Separate temporary Results from a persistent Applications tab with saved, preparing, applied, and closed lifecycle views | `discussions/035_persistent_applications_tab.md` |
+| Q-046 | done | 1 | After manual application, save the verified JD and structured application snapshot beside the generated resume before marking the job applied | `discussions/036_applied_job_evidence_package.md` |
+| Q-047 | done | 1 | Batch Gmail alert-message downloads with live counts and recover Network Reviews from valid Drive/Excel workbooks without cached worksheet dimensions | `discussions/037_gmail_batching_and_network_recovery.md` |
+| Q-048 | in progress | 1 | Re-audit every company job link, color inaccessible rows red and manual/company-specific rows blue, and expand India-focused product, startup, and mid-sized coverage | `discussions/038_registry_link_audit_and_india_expansion.md` |
+| Q-049 | done | 1 | Refresh the React interface with a premium, clearer visual hierarchy and simpler copy while preserving the private job-search lifecycle | `discussions/039_premium_ui_refresh.md` |
+| Q-050 | done | 1 | Save a readable, completeness-labeled JD package after manual application and simplify Search to one primary action with advanced filters collapsed | `discussions/040_clean_jd_archives_and_simplified_actions.md` |
+| Q-051 | in_progress | 1 | Remove proven-unused production code/files, verify the accumulated release, open a descriptive PR, and merge it | `discussions/041_production_cleanup_and_release_pr.md` |
 
 ## Adding an item
 

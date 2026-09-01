@@ -1,8 +1,10 @@
 import tempfile
 import unittest
+import re
 from pathlib import Path
+from zipfile import ZIP_DEFLATED, ZipFile
 
-from openpyxl import Workbook
+from openpyxl import Workbook, load_workbook
 
 from job_hunt.network.service import (
     NetworkReviewService,
@@ -112,6 +114,19 @@ def _write_registry(path: Path) -> None:
     workbook.save(path)
 
 
+def _remove_cached_dimensions(path: Path) -> None:
+    """Reproduce valid Drive/Excel workbooks that omit worksheet dimensions."""
+
+    replacement = path.with_name(f"{path.stem}.dimensionless.xlsx")
+    with ZipFile(path, "r") as source, ZipFile(replacement, "w", ZIP_DEFLATED) as target:
+        for entry in source.infolist():
+            payload = source.read(entry.filename)
+            if entry.filename.startswith("xl/worksheets/"):
+                payload = re.sub(rb"<dimension\s+ref=\"[^\"]+\"\s*/>", b"", payload)
+            target.writestr(entry, payload)
+    replacement.replace(path)
+
+
 class NetworkReviewTests(unittest.TestCase):
     def test_relevance_prioritizes_ai_leadership_and_not_recruiting(self):
         leader = Connection(
@@ -197,6 +212,24 @@ class NetworkReviewTests(unittest.TestCase):
         self.assertEqual(network_records[0].email_address, "private-asha@example.com")
         self.assertEqual(len(referral_profiles), 3)
         self.assertFalse(hasattr(referral_profiles[0], "email_address"))
+
+    def test_loader_recovers_bounds_when_excel_omits_cached_dimensions(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "registry.xlsx"
+            _write_registry(path)
+            _remove_cached_dimensions(path)
+
+            workbook = load_workbook(path, read_only=True, data_only=True)
+            try:
+                self.assertIsNone(workbook["LinkedIn Connections"].max_row)
+                self.assertIsNone(workbook["LinkedIn Connections"].max_column)
+            finally:
+                workbook.close()
+
+            records = load_registry_connection_records(path, include_email=True)
+
+        self.assertEqual(len(records), 4)
+        self.assertEqual(records[0].full_name, "Asha Leader")
 
 
 if __name__ == "__main__":

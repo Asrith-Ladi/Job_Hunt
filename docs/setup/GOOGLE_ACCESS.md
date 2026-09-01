@@ -107,7 +107,7 @@ set "JOB_HUNT_GOOGLE_CREDENTIALS=C:\private\path\oauth-client.json"
 5. Google returns to the React application; confirm **Google connected**.
 6. Keep the default production labels or use `link_test` and `nau_test` for a smaller fixture run.
 7. Select Gmail in **Search** and run the selected source.
-8. Confirm the rows appear in **Results & Applications** and are labelled temporary; no dated Excel file should be created.
+8. Confirm the rows appear in **Results** and are labelled temporary; no dated Excel file should be created. Save one row and confirm it appears in **Applications** after refresh.
 9. Select **Save for later** or change one application status. Reload the site and confirm only that tracked job returns from `Job Hunt/Source/application_queue.json`.
 
 The first tracked job creates or reuses `Job Hunt/Source/application_queue.json`. Searching alone does not create a dated folder or workbook, invoke an LLM, modify Gmail, or submit applications. Existing historical Gmail workbooks remain available from the Results screen.

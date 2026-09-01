@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { api } from "./api";
 import type { AppConfig, GmailRunHistoryEntry, JobRow, SavedApplication, Scalar } from "./types";
 import {
@@ -16,7 +16,17 @@ import {
   type WorkspaceSource,
 } from "./workspace";
 
-type QueueView = "all" | "saved" | "possible" | "needs_official" | "official_ready" | "applied";
+type QueueMode = "results" | "applications";
+type QueueView =
+  | "all"
+  | "saved"
+  | "possible"
+  | "needs_official"
+  | "official_ready"
+  | "saved_later"
+  | "preparing"
+  | "applied"
+  | "closed";
 
 function readableDate(value: string): string {
   if (!value) return "Date unavailable";
@@ -45,10 +55,24 @@ function officialStatus(row: JobRow): { label: string; tone: string } {
   return { label: "Official match needed", tone: "warning" };
 }
 
+function applicationStatus(row: JobRow): string {
+  return scalarText(row.application_status).toLocaleLowerCase() || "not_started";
+}
+
+function isSavedLater(row: JobRow): boolean {
+  return ["not_started", "saved"].includes(applicationStatus(row));
+}
+
+function isPreparing(row: JobRow): boolean {
+  return ["reviewing", "shortlisted"].includes(applicationStatus(row));
+}
+
 function isApplied(row: JobRow): boolean {
-  return ["applied", "interviewing", "shortlisted", "offer"].includes(
-    scalarText(row.application_status).toLocaleLowerCase(),
-  );
+  return ["applied", "interviewing", "offer"].includes(applicationStatus(row));
+}
+
+function isClosed(row: JobRow): boolean {
+  return ["rejected", "withdrawn", "expired"].includes(applicationStatus(row));
 }
 
 function groupMatchesView(group: QueueGroup, view: QueueView): boolean {
@@ -56,7 +80,10 @@ function groupMatchesView(group: QueueGroup, view: QueueView): boolean {
   if (view === "possible") return group.possibleDuplicate;
   if (view === "needs_official") return group.items.some((item) => !rowOfficialUrl(item.row));
   if (view === "official_ready") return group.items.some((item) => Boolean(rowOfficialUrl(item.row)));
+  if (view === "saved_later") return group.items.some((item) => isSavedLater(item.row));
+  if (view === "preparing") return group.items.some((item) => isPreparing(item.row));
   if (view === "applied") return group.items.some((item) => isApplied(item.row));
+  if (view === "closed") return group.items.some((item) => isClosed(item.row));
   return true;
 }
 
@@ -96,10 +123,16 @@ function changeStatus(value: Scalar | undefined): { label: string; className: st
 
 function RunOutput({ source, run }: { source: WorkspaceSource; run: NonNullable<WorkspaceRuns[WorkspaceSource]> }) {
   if (run.transient) {
+    const checks = "source_checks" in run ? run.source_checks : [];
+    const extracted = checks.reduce((total, check) => total + Number(check.jobs_found || 0), 0);
+    const matched = checks.reduce((total, check) => total + Number(check.jobs_exported || 0), 0);
+    const diagnostic = checks.length
+      ? `${extracted} extracted → ${matched} matched · ${Array.from(new Set(checks.map((check) => check.provider))).join(", ")}`
+      : `${readableDate(run.run_started_at)} · not written to Drive`;
     return (
       <article className="run-output-row">
         <span className={`source-chip ${sourceClass(source)}`}>{SOURCE_LABELS[source]}</span>
-        <div><strong>{run.rows.length} temporary result{run.rows.length === 1 ? "" : "s"}</strong><small>{readableDate(run.run_started_at)} · not written to Drive</small></div>
+        <div><strong>{run.rows.length} temporary result{run.rows.length === 1 ? "" : "s"}</strong><small>{diagnostic}</small></div>
         <span className="temporary-result-badge">Session only</span>
       </article>
     );
@@ -130,13 +163,32 @@ function GmailRunHistoryMenu({
   loadingRunId: string;
   onLoad: (runId: string) => void;
 }) {
+  const [open, setOpen] = useState(false);
+  useEffect(() => {
+    if (!open) return undefined;
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setOpen(false);
+    };
+    window.addEventListener("keydown", closeOnEscape);
+    return () => {
+      document.body.style.overflow = previousOverflow;
+      window.removeEventListener("keydown", closeOnEscape);
+    };
+  }, [open]);
+
   return (
-    <details className="run-outputs-menu run-history-menu">
-      <summary>Previous Gmail runs · {history.length}</summary>
-      <div>
+    <div className="run-history-popover">
+      <button className="run-history-trigger" type="button" onClick={() => setOpen(true)}>Previous Gmail runs · {history.length}</button>
+      {open && (
+        <div className="popover-backdrop" role="presentation" onMouseDown={(event) => {
+          if (event.currentTarget === event.target) setOpen(false);
+        }}>
+          <section className="run-history-dialog" role="dialog" aria-modal="true" aria-labelledby="run-history-title">
         <header className="run-history-heading">
-          <strong>Previously generated Gmail job files</strong>
-          <span>Load one for review without rereading Gmail.</span>
+          <div><strong id="run-history-title">Previous Gmail searches</strong><span>Load saved results without reading Gmail again.</span></div>
+          <button className="popover-close" type="button" onClick={() => setOpen(false)} aria-label="Close previous Gmail searches">×</button>
         </header>
         {history.length ? history.map((entry) => {
           const loaded = entry.run_id === loadedRunId;
@@ -164,8 +216,10 @@ function GmailRunHistoryMenu({
             </article>
           );
         }) : <p className="run-history-empty">No saved Gmail runs are available yet.</p>}
-      </div>
-    </details>
+          </section>
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -206,12 +260,23 @@ function SourceRecord({
         }]
       : [];
   const runChange = changeStatus(row.run_change_status);
+  const matchType = scalarText(row.match_type);
+  const matchLabel = matchType === "title_match"
+    ? "Title match"
+    : matchType === "capability_title_match"
+      ? "Capability in title"
+      : matchType === "capability_description_match"
+        ? "JD capability match"
+        : "";
   return (
     <article className="queue-source-record">
       <div className="record-source-rail">
         <span className={`source-chip ${sourceClass(item.source)}`}>{SOURCE_LABELS[item.source]}</span>
         <small>{scalarText(row.provider) || scalarText(row.alert_source) || "Source record"}</small>
         {runChange && <em className={`change-badge ${runChange.className}`}>{runChange.label}</em>}
+        {matchLabel && (
+          <em className="change-badge relevance" title={scalarText(row.matched_terms)}>{matchLabel}</em>
+        )}
         {historical && <em className="change-badge historical">Previous run</em>}
         <em className={`change-badge ${item.persisted ? "persisted" : "temporary"}`}>
           {item.persisted ? "Saved in Drive" : "Temporary result"}
@@ -317,6 +382,7 @@ function SourceRecord({
 }
 
 export default function JobQueueTab({
+  mode,
   config,
   runs,
   savedApplications,
@@ -330,6 +396,7 @@ export default function JobQueueTab({
   onLoadGmailRun,
   onNotice,
 }: {
+  mode: QueueMode;
   config: AppConfig;
   runs: WorkspaceRuns;
   savedApplications: SavedApplication[];
@@ -346,9 +413,17 @@ export default function JobQueueTab({
   const [query, setQuery] = useState("");
   const [source, setSource] = useState<"all" | WorkspaceSource>("all");
   const [view, setView] = useState<QueueView>("all");
-  const items = useMemo(
+  const workspaceItems = useMemo(
     () => flattenRuns(runs, savedApplications),
     [runs, savedApplications],
+  );
+  const items = useMemo(
+    () => workspaceItems.filter((item) => (
+      mode === "applications"
+        ? item.persisted
+        : item.runId !== "application_queue"
+    )),
+    [mode, workspaceItems],
   );
   const groups = useMemo(() => groupQueueItems(items), [items]);
   const filtered = useMemo(
@@ -362,6 +437,9 @@ export default function JobQueueTab({
   const possibleCount = groups.filter((group) => group.possibleDuplicate).length;
   const officialCount = items.filter((item) => rowOfficialUrl(item.row)).length;
   const appliedCount = items.filter((item) => isApplied(item.row)).length;
+  const savedLaterCount = items.filter((item) => isSavedLater(item.row)).length;
+  const preparingCount = items.filter((item) => isPreparing(item.row)).length;
+  const closedCount = items.filter((item) => isClosed(item.row)).length;
   const savedCount = items.filter((item) => item.persisted).length;
   const currentResultCount = items.filter((item) => item.currentResult).length;
   const runEntries = (Object.entries(runs) as Array<[WorkspaceSource, WorkspaceRuns[WorkspaceSource]]>)
@@ -377,16 +455,22 @@ export default function JobQueueTab({
   };
 
   if (!items.length) {
-    const hasSavedGmailRuns = gmailHistory.length > 0;
+    const hasSavedGmailRuns = mode === "results" && gmailHistory.length > 0;
     return (
       <main className="product-page queue-page">
         <section className="premium-empty-state">
-          <span className="empty-state-mark">01</span>
-          <p className="eyebrow">Application queue</p>
-          <h2>{hasSavedGmailRuns ? "No current or saved jobs are visible." : "Search at least one source to build your review queue."}</h2>
-          <p>{hasSavedGmailRuns
-            ? "Start a fresh search or open a previous Gmail workbook to review jobs collected before the canonical application queue was introduced."
-            : "Temporary Gmail alerts, official company results, and structured ATS jobs stay as separate evidence records until you explicitly save one."}</p>
+          <span className="empty-state-mark">{mode === "applications" ? "03" : "02"}</span>
+          <p className="eyebrow">{mode === "applications" ? "Persistent application tracking" : "Current results"}</p>
+          <h2>{mode === "applications"
+            ? "No jobs have been saved for tracking yet."
+            : hasSavedGmailRuns
+              ? "No current search results are visible."
+              : "Search at least one source to build today’s result list."}</h2>
+          <p>{mode === "applications"
+            ? "Use Save for later or change a job’s application status from Results. It will appear here permanently and remain available after refresh."
+            : hasSavedGmailRuns
+              ? "Start a fresh search or open a previous Gmail workbook to review jobs collected before the current temporary-search workflow."
+              : "Gmail alerts, official company results, and structured ATS jobs remain temporary until you explicitly track one."}</p>
           <div className="empty-state-actions">
             {hasSavedGmailRuns && (
               <GmailRunHistoryMenu
@@ -407,12 +491,16 @@ export default function JobQueueTab({
     <main className="product-page queue-page">
       <section className="page-intro queue-intro">
         <div>
-          <p className="eyebrow">Temporary results · permanent application tracking</p>
-          <h2>Review the opportunity once. Keep every source as evidence.</h2>
-          <p>Searches stay in this session. Save for later, status changes, and notes create or update the permanent Drive queue.</p>
+          <p className="eyebrow">{mode === "applications" ? "Step 3 · Track progress" : "Step 2 · Review matches"}</p>
+          <h2>{mode === "applications"
+            ? "Move each opportunity forward."
+            : "Choose the jobs worth pursuing."}</h2>
+          <p>{mode === "applications"
+            ? "Update status, add notes, and prepare documents from one place."
+            : "Open a match to review it. Save only the roles you want in your application pipeline."}</p>
         </div>
         <div className="queue-heading-actions">
-          {gmailHistory.length > 0 && (
+          {mode === "results" && gmailHistory.length > 0 && (
             <GmailRunHistoryMenu
               history={gmailHistory}
               loadedRunId={runs.gmail?.run_id ?? ""}
@@ -420,17 +508,23 @@ export default function JobQueueTab({
               onLoad={onLoadGmailRun}
             />
           )}
-          <details className="run-outputs-menu">
-            <summary>{runEntries.length} visible source set{runEntries.length === 1 ? "" : "s"}</summary>
-            <div>{runEntries.map(([runSource, run]) => <RunOutput source={runSource} run={run} key={runSource} />)}</div>
-          </details>
+          {mode === "results" && (
+            <details className="run-outputs-menu">
+              <summary>{runEntries.length} visible source set{runEntries.length === 1 ? "" : "s"}</summary>
+              <div>{runEntries.map(([runSource, run]) => <RunOutput source={runSource} run={run} key={runSource} />)}</div>
+            </details>
+          )}
           <span className="queue-persistence-state">
-            {savingJobIds.size ? `Saving ${savingJobIds.size} job${savingJobIds.size === 1 ? "" : "s"}…` : `${savedCount} saved permanently`}
+            {savingJobIds.size
+              ? `Saving ${savingJobIds.size} job${savingJobIds.size === 1 ? "" : "s"}…`
+              : mode === "applications"
+                ? `${items.length} tracked permanently`
+                : `${savedCount} current results saved`}
           </span>
         </div>
       </section>
 
-      {runs.gmail?.historical && (
+      {mode === "results" && runs.gmail?.historical && (
         <section className="historical-run-banner" role="status">
           <div>
             <strong>Previous Gmail run loaded</strong>
@@ -440,12 +534,21 @@ export default function JobQueueTab({
         </section>
       )}
 
-      <section className="queue-stats" aria-label="Queue summary">
-        <button className={view === "all" ? "active" : ""} type="button" onClick={() => setView("all")}><small>Visible jobs</small><strong>{items.length}</strong><span>{currentResultCount} current search results</span></button>
-        <button className={view === "saved" ? "active" : ""} type="button" onClick={() => setView("saved")}><small>Saved jobs</small><strong>{savedCount}</strong><span>Permanent Drive queue</span></button>
-        <button className={view === "official_ready" ? "active" : ""} type="button" onClick={() => setView("official_ready")}><small>Official links</small><strong>{officialCount}</strong><span>JD actions ready</span></button>
-        <button className={view === "applied" ? "active" : ""} type="button" onClick={() => setView("applied")}><small>In progress</small><strong>{appliedCount}</strong><span>Applied or later</span></button>
-      </section>
+      {mode === "applications" ? (
+        <section className="queue-stats" aria-label="Application summary">
+          <button className={view === "all" ? "active" : ""} type="button" onClick={() => setView("all")}><small>Tracked jobs</small><strong>{items.length}</strong><span>Permanent Drive queue</span></button>
+          <button className={view === "saved_later" ? "active" : ""} type="button" onClick={() => setView("saved_later")}><small>Saved for later</small><strong>{savedLaterCount}</strong><span>Not submitted yet</span></button>
+          <button className={view === "preparing" ? "active" : ""} type="button" onClick={() => setView("preparing")}><small>Preparing</small><strong>{preparingCount}</strong><span>Reviewing or shortlisted</span></button>
+          <button className={view === "applied" ? "active" : ""} type="button" onClick={() => setView("applied")}><small>Applied</small><strong>{appliedCount}</strong><span>Applied, interviewing, or offer</span></button>
+        </section>
+      ) : (
+        <section className="queue-stats" aria-label="Result summary">
+          <button className={view === "all" ? "active" : ""} type="button" onClick={() => setView("all")}><small>Visible jobs</small><strong>{items.length}</strong><span>{currentResultCount} current search results</span></button>
+          <button className={view === "saved" ? "active" : ""} type="button" onClick={() => setView("saved")}><small>Saved jobs</small><strong>{savedCount}</strong><span>Also available in Applications</span></button>
+          <button className={view === "official_ready" ? "active" : ""} type="button" onClick={() => setView("official_ready")}><small>Official links</small><strong>{officialCount}</strong><span>JD actions ready</span></button>
+          <button className={view === "applied" ? "active" : ""} type="button" onClick={() => setView("applied")}><small>In progress</small><strong>{appliedCount}</strong><span>Applied or later</span></button>
+        </section>
+      )}
 
       <section className="queue-workspace-card">
         <div className="queue-toolbar">
@@ -453,13 +556,23 @@ export default function JobQueueTab({
             <span aria-hidden="true">⌕</span>
             <input value={query} placeholder="Search company, title, location, provider, or referral…" onChange={(event) => setQuery(event.target.value)} />
           </label>
-          <div className="segmented-filter" aria-label="Queue state">
-            <button className={view === "all" ? "active" : ""} onClick={() => setView("all")} type="button">All</button>
-            <button className={view === "saved" ? "active" : ""} onClick={() => setView("saved")} type="button">Saved</button>
-            <button className={view === "possible" ? "active" : ""} onClick={() => setView("possible")} type="button">Possible duplicates ({possibleCount})</button>
-            <button className={view === "needs_official" ? "active" : ""} onClick={() => setView("needs_official")} type="button">Needs official match</button>
-            <button className={view === "official_ready" ? "active" : ""} onClick={() => setView("official_ready")} type="button">Official ready</button>
-          </div>
+          {mode === "applications" ? (
+            <div className="segmented-filter" aria-label="Application stage">
+              <button className={view === "all" ? "active" : ""} onClick={() => setView("all")} type="button">All tracked</button>
+              <button className={view === "saved_later" ? "active" : ""} onClick={() => setView("saved_later")} type="button">Saved for later</button>
+              <button className={view === "preparing" ? "active" : ""} onClick={() => setView("preparing")} type="button">Preparing</button>
+              <button className={view === "applied" ? "active" : ""} onClick={() => setView("applied")} type="button">Applied</button>
+              <button className={view === "closed" ? "active" : ""} onClick={() => setView("closed")} type="button">Closed ({closedCount})</button>
+            </div>
+          ) : (
+            <div className="segmented-filter" aria-label="Result state">
+              <button className={view === "all" ? "active" : ""} onClick={() => setView("all")} type="button">All</button>
+              <button className={view === "saved" ? "active" : ""} onClick={() => setView("saved")} type="button">Saved</button>
+              <button className={view === "possible" ? "active" : ""} onClick={() => setView("possible")} type="button">Possible duplicates ({possibleCount})</button>
+              <button className={view === "needs_official" ? "active" : ""} onClick={() => setView("needs_official")} type="button">Needs official match</button>
+              <button className={view === "official_ready" ? "active" : ""} onClick={() => setView("official_ready")} type="button">Official ready</button>
+            </div>
+          )}
           <select value={source} onChange={(event) => setSource(event.target.value as "all" | WorkspaceSource)} aria-label="Filter queue by source">
             <option value="all">All sources</option>
             <option value="gmail">Gmail</option>
@@ -500,7 +613,7 @@ export default function JobQueueTab({
                     <SourceRecord
                       item={item}
                       applicationStatuses={config.application_statuses}
-                      historical={Boolean(runs[item.source]?.historical)}
+                      historical={mode === "results" && Boolean(runs[item.source]?.historical)}
                       saving={savingJobIds.has(item.id)}
                       onUpdate={onUpdate}
                       onPersist={onPersist}
@@ -513,7 +626,7 @@ export default function JobQueueTab({
               </details>
             );
           })}
-          {!filtered.length && <div className="queue-no-results"><strong>No job units match this view.</strong><span>Adjust the source, status, or text filter without changing the saved records.</span></div>}
+          {!filtered.length && <div className="queue-no-results"><strong>No job units match this view.</strong><span>Adjust the source, stage, or text filter without changing any saved records.</span></div>}
         </div>
       </section>
     </main>

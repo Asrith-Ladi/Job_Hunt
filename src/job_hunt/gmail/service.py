@@ -11,7 +11,7 @@ import threading
 from dataclasses import asdict, dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Iterable, Mapping
+from typing import Any, Callable, Iterable, Mapping
 
 from job_hunt.gmail.config import RunConfig
 from job_hunt.gmail.state import (
@@ -127,6 +127,7 @@ class GmailWorkflowService:
             "source_tabs": [
                 "run_setup",
                 "job_queue",
+                "applications",
                 "network_reviews",
             ],
             "sources": ["linkedin", "naukri"],
@@ -189,23 +190,33 @@ class GmailWorkflowService:
             ),
         )
 
-    def search(self, options: GmailRunOptions) -> dict[str, Any]:
+    def search(
+        self,
+        options: GmailRunOptions,
+        *,
+        progress_callback: Callable[[Mapping[str, Any]], None] | None = None,
+    ) -> dict[str, Any]:
         """Read and normalize the current matching alerts without creating an artifact."""
 
         if not self._mutation_lock.acquire(blocking=False):
             raise RuntimeError("Another Gmail search or application update is already in progress.")
         try:
-            return self._search_locked(options)
+            return self._search_locked(options, progress_callback=progress_callback)
         finally:
             self._mutation_lock.release()
 
-    def _search_locked(self, options: GmailRunOptions) -> dict[str, Any]:
+    def _search_locked(
+        self,
+        options: GmailRunOptions,
+        *,
+        progress_callback: Callable[[Mapping[str, Any]], None] | None = None,
+    ) -> dict[str, Any]:
         config = self._run_config(options)
         config.validate()
         credentials = self.google_connection.require_credentials()
         run_started_at = datetime.now(TIME_ZONE).replace(microsecond=0)
         reader = GoogleGmailReader.from_credentials(credentials)
-        result = run_pipeline(config, reader)
+        result = run_pipeline(config, reader, progress_callback=progress_callback)
         rows = [job.to_dict() for job in result.jobs]
         rows.sort(
             key=lambda job: (
@@ -215,6 +226,17 @@ class GmailWorkflowService:
                 str(job.get("source_url") or ""),
             )
         )
+        if progress_callback is not None:
+            progress_callback(
+                {
+                    "stage": "gmail_referrals",
+                    "message": "Matching saved LinkedIn connections to job companies.",
+                    "current_item": "Offline referral matching",
+                    "completed_items": len(rows),
+                    "total_items": len(rows),
+                    "matches_found": len(rows),
+                }
+            )
         rows, referral_stats = enrich_gmail_referrals(rows, self.paths.registry_path)
         summary = asdict(result.summary)
         summary["jobs_returned_this_search"] = len(rows)

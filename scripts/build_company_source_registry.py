@@ -106,7 +106,7 @@ COMPANIES = [
         "Tata Consultancy Services (TCS)",
         "IT services & consulting",
         "https://www.tcs.com/careers",
-        "https://www.tcs.com/careers/india",
+        "https://ibegin.tcsapps.com/candidate/?geography=IN&language=EN",
         "TCS iBegin / company-specific",
         source_identifier="iBegin",
         india_jobs="Yes",
@@ -240,10 +240,10 @@ COMPANIES = [
         "PwC",
         "Professional services & consulting",
         "https://www.pwc.in/careers.html",
-        "https://jobs.us.pwc.com/",
+        "https://www.pwc.in/careers.html",
         "Workday / country-specific portals",
         india_jobs="Yes",
-        notes="Use the India careers page first; job portals vary by PwC member firm.",
+        notes="Use the India careers page first; PwC member-firm job portals vary and require manual navigation.",
     ),
     source(
         "KPMG",
@@ -530,10 +530,11 @@ COMPANIES = [
         "American Express",
         "Payments & financial services",
         "https://www.americanexpress.com/en-us/careers/",
-        "https://aexp.eightfold.ai/careers",
-        "Eightfold",
-        source_identifier="aexp.eightfold.ai",
+        "https://careers.americanexpress.com/en/sites/CX_1/jobs",
+        "Oracle Recruiting Cloud",
+        source_identifier="careers.americanexpress.com | CX_1",
         india_jobs="Yes",
+        notes="American Express migrated away from the former Eightfold URL to its current Oracle-hosted public careers experience.",
     ),
     source(
         "JPMorgan Chase",
@@ -629,8 +630,8 @@ COMPANIES = [
         "Honeywell",
         "Industrial technology",
         "https://careers.honeywell.com/",
-        "https://careers.honeywell.com/us/en/search-results",
-        "Phenom",
+        "https://careers.honeywell.com/en/sites/Honeywell/jobs",
+        "Oracle Recruiting Cloud",
         india_jobs="Yes",
     ),
     source(
@@ -1193,7 +1194,9 @@ NEW_MNC_COMPANIES = [
     simple_source(
         "Toyota",
         "Automotive technology",
-        "https://www.toyotabharat.com/careers/",
+        "https://careers.toyotabharat.com/",
+        "https://careers.toyotabharat.com/",
+        "Company-hosted careers page / manual application",
     ),
     simple_source(
         "Mercedes-Benz Group",
@@ -1642,7 +1645,11 @@ NEW_MID_SIZED_COMPANIES = [
     simple_source(
         "Redis",
         "Database platform",
-        "https://redis.io/careers/",
+        "https://redis.io/company/careers/current-job-openings/",
+        "https://redis.io/company/careers/current-job-openings/",
+        "Company-hosted jobs portal",
+        india_jobs="Global search",
+        notes="Use the live first-party openings page; the former Greenhouse board root now returns 404 and is retained only as historical discovery evidence.",
     ),
     simple_source(
         "Grafana Labs",
@@ -1779,6 +1786,301 @@ OTHER_COMPANIES = [
 ]
 
 
+INDIA_PRODUCT_EXPANSION = [
+    simple_source(
+        "Paytm",
+        "Payments & financial technology",
+        "https://paytm.com/careers",
+        "https://jobs.lever.co/paytm",
+        "Lever",
+        source_identifier="paytm",
+        public_endpoint="https://api.lever.co/v0/postings/paytm?mode=json",
+        api_key_required="No",
+    ),
+    simple_source(
+        "MakeMyTrip",
+        "Travel technology",
+        "https://careers.makemytrip.com/",
+        "https://careers.makemytrip.com/",
+        "Company-hosted jobs portal",
+    ),
+    simple_source(
+        "IndiaMART",
+        "B2B marketplace technology",
+        "https://careers.indiamart.com/",
+        "https://careers.smartrecruiters.com/Indiamart1",
+        "SmartRecruiters",
+        source_identifier="Indiamart1",
+        public_endpoint="https://api.smartrecruiters.com/v1/companies/Indiamart1/postings",
+        api_key_required="No",
+    ),
+    simple_source(
+        "Jio Platforms",
+        "Telecommunications & digital products",
+        "https://careers.jio.com/",
+        "https://careers.jio.com/",
+        "Company-specific",
+    ),
+    simple_source(
+        "MapmyIndia",
+        "Maps, geospatial & IoT products",
+        "https://www.mapmyindia.com/careers/",
+        "https://www.mapmyindia.com/careers/",
+        "Company-hosted careers page / manual application",
+        priority="Medium",
+        notes="The official page currently emphasizes direct resume submission; review openings manually before applying.",
+    ),
+    simple_source(
+        "Juspay",
+        "Payments infrastructure",
+        "https://juspay.io/careers",
+        "https://juspay.io/careers",
+        "Company-hosted jobs portal",
+    ),
+    simple_source(
+        "Clear",
+        "Tax, payments & compliance technology",
+        "https://www.clear.in/s/careers",
+        "https://www.clear.in/s/careers",
+        "Company-hosted jobs portal",
+    ),
+    simple_source(
+        "Games24x7",
+        "Gaming, AI & data products",
+        "https://www.games24x7.com/life",
+        "https://www.games24x7.com/life",
+        "Company-hosted jobs portal",
+    ),
+    simple_source(
+        "BookMyShow",
+        "Entertainment ticketing technology",
+        "https://in.bookmyshow.com/careers",
+        "https://careers.smartrecruiters.com/BookMyShow",
+        "SmartRecruiters",
+        source_identifier="BookMyShow",
+        public_endpoint="https://api.smartrecruiters.com/v1/companies/BookMyShow/postings",
+        api_key_required="No",
+    ),
+    simple_source(
+        "MobiKwik",
+        "Payments & consumer financial technology",
+        "https://www.mobikwik.com/careers/",
+        "https://www.mobikwik.com/careers/",
+        "Company-hosted jobs portal",
+    ),
+    simple_source(
+        "Policybazaar",
+        "Insurance & financial technology",
+        "https://www.policybazaar.com/careers/",
+        "https://policybazaar.hire.trakstar.com/jobs",
+        "Trakstar Hire",
+        source_identifier="policybazaar",
+        notes="The public Trakstar page is company-specific and should remain a manual adapter unless separately qualified.",
+    ),
+    simple_source(
+        "Practo",
+        "Digital healthcare products",
+        "https://www.practo.com/company/careers",
+        "https://practo.app.param.ai/jobs/",
+        "Param AI / company-specific",
+        source_identifier="practo.app.param.ai",
+        notes="The official Practo careers route redirects to its public Param AI jobs experience; treat it as a company-specific adapter.",
+    ),
+]
+
+
+INDIA_STARTUP_EXPANSION = [
+    simple_source(
+        "Krutrim AI Labs",
+        "Foundation models & AI infrastructure",
+        "https://ai-labs.olakrutrim.com/",
+        "https://ai-labs.olakrutrim.com/",
+        "Company-hosted careers section / manual application",
+        notes="Use the official Join Us section and verify each opening manually.",
+    ),
+    simple_source(
+        "Qure.ai",
+        "Healthcare AI",
+        "https://jobs.qure.ai/",
+        "https://qure.zohorecruit.in/jobs/careers",
+        "Zoho Recruit",
+        source_identifier="qure.zohorecruit.in",
+    ),
+    simple_source(
+        "Pixxel",
+        "Earth-observation & space data",
+        "https://www.pixxel.space/careers",
+        "https://www.pixxel.space/careers",
+        "Company-hosted jobs portal",
+    ),
+    simple_source(
+        "Skyroot Aerospace",
+        "Space launch technology",
+        "https://www.skyroot.in/careers",
+        "https://skyroot.zohorecruit.in/jobs/Careers",
+        "Zoho Recruit",
+        source_identifier="skyroot.zohorecruit.in",
+    ),
+    simple_source(
+        "Agnikul Cosmos",
+        "Space launch technology",
+        "https://agnikul.in/careers/",
+        "https://agnikul.in/careers/",
+        "Company-hosted careers page / manual application",
+        notes="The official page publishes roles but currently requests applications by email; no automatic submission is permitted.",
+    ),
+    simple_source(
+        "Atlan",
+        "Data catalog & AI context platform",
+        "https://atlan.com/careers/",
+        "https://atlan.com/careers/?p=open-positions",
+        "Company-hosted jobs portal",
+    ),
+    simple_source(
+        "Neysa",
+        "AI cloud & infrastructure",
+        "https://neysa.ai/careers/",
+        "https://neysa.ai/careers/job-openings/",
+        "Company-hosted jobs portal",
+    ),
+    simple_source(
+        "Ema",
+        "Enterprise agentic AI",
+        "https://www.ema.ai/careers",
+        "https://www.ema.ai/careers/jobs",
+        "Company-hosted jobs portal",
+    ),
+    simple_source(
+        "SpotDraft",
+        "AI contract lifecycle management",
+        "https://www.spotdraft.com/careers",
+        "https://spotdraft.freshteam.com/jobs",
+        "Freshteam",
+        source_identifier="spotdraft",
+    ),
+    simple_source(
+        "Sprinto",
+        "Security compliance automation",
+        "https://sprinto.com/about-us/",
+        "https://jobs.lever.co/Sprinto",
+        "Lever",
+        source_identifier="Sprinto",
+        public_endpoint="https://api.lever.co/v0/postings/Sprinto?mode=json",
+        api_key_required="No",
+    ),
+    simple_source(
+        "SuperOps",
+        "AI-native IT management",
+        "https://superops.com/careers",
+        "https://superops.com/careers",
+        "Company-hosted jobs portal",
+    ),
+    simple_source(
+        "Rocketlane",
+        "Customer onboarding software",
+        "https://www.rocketlane.com/",
+        "https://careers.kula.ai/rocketlane",
+        "Kula",
+        source_identifier="rocketlane",
+    ),
+]
+
+
+INDIA_MID_SIZED_EXPANSION = [
+    simple_source(
+        "Whatfix",
+        "Digital adoption software",
+        "https://whatfix.com/careers",
+        "https://whatfix101.hire.trakstar.com/jobs",
+        "Trakstar Hire",
+        source_identifier="whatfix101",
+    ),
+    simple_source(
+        "Icertis",
+        "Contract intelligence software",
+        "https://www.icertis.com/company/careers/",
+        "https://www.icertis.com/company/careers/",
+        "Company-hosted jobs portal",
+    ),
+    simple_source(
+        "Mindtickle",
+        "Revenue enablement software",
+        "https://www.mindtickle.com/careers/",
+        "https://careers.smartrecruiters.com/mindtickle",
+        "SmartRecruiters",
+        source_identifier="mindtickle",
+        public_endpoint="https://api.smartrecruiters.com/v1/companies/mindtickle/postings",
+        api_key_required="No",
+    ),
+    simple_source(
+        "CleverTap",
+        "Customer engagement software",
+        "https://clevertap.com/careers/",
+        "https://careers.kula.ai/clevertap",
+        "Kula",
+        source_identifier="clevertap",
+    ),
+    simple_source(
+        "MoEngage",
+        "Customer engagement software",
+        "https://www.moengage.com/careers/",
+        "https://www.moengage.com/careers/",
+        "Company-hosted jobs portal",
+    ),
+    simple_source(
+        "Gupshup",
+        "Conversational AI & messaging",
+        "https://www.gupshup.ai/careers",
+        "https://www.gupshup.ai/careers",
+        "Company-hosted jobs portal",
+    ),
+    simple_source(
+        "Amagi",
+        "Cloud broadcast & media technology",
+        "https://www.amagi.com/careers",
+        "https://www.amagi.com/careers",
+        "Company-hosted jobs portal",
+    ),
+    simple_source(
+        "Hasura",
+        "Data API & AI development platform",
+        "https://hasura.io/careers/",
+        "https://promptql.io/careers",
+        "Company-hosted jobs portal",
+        notes="The former Hasura careers URL currently redirects to PromptQL's official careers page.",
+    ),
+    simple_source(
+        "LeadSquared",
+        "Sales execution & CRM software",
+        "https://www.leadsquared.com/careers/",
+        "https://leadsquaredhrms.darwinbox.in/ms/candidatev2/main/careers",
+        "Darwinbox",
+        source_identifier="leadsquaredhrms.darwinbox.in",
+    ),
+    simple_source(
+        "Darwinbox",
+        "Human capital management software",
+        "https://darwinbox.com/en-us/careers",
+        "https://darwinbox.com/en-us/careers",
+        "Company-hosted JavaScript careers page",
+    ),
+    simple_source(
+        "Wingify",
+        "Digital experience optimization software",
+        "https://wingify.com/careers/",
+        "https://wingify.com/careers/",
+        "Company-hosted jobs portal",
+    ),
+    simple_source(
+        "GreyOrange",
+        "Warehouse robotics software",
+        "https://www.greyorange.com/careers/",
+        "https://www.greyorange.com/company/careers/",
+        "Company-hosted jobs portal",
+    ),
+]
+
+
 _ALL_EXISTING_BY_NAME = {
     company.company: company for company in COMPANIES + PRODUCT_COMPANIES
 }
@@ -1806,13 +2108,13 @@ ESTABLISHED_PRODUCT_COMPANIES = [
     company
     for company in PRODUCT_COMPANIES
     if company.company not in _STARTUP_FROM_PRODUCT | _MID_SIZED_FROM_PRODUCT
-] + NEW_PRODUCT_COMPANIES
+] + NEW_PRODUCT_COMPANIES + INDIA_PRODUCT_EXPANSION
 STARTUP_COMPANIES = [
     _ALL_EXISTING_BY_NAME[name] for name in sorted(_STARTUP_FROM_PRODUCT)
-] + NEW_STARTUP_COMPANIES
+] + NEW_STARTUP_COMPANIES + INDIA_STARTUP_EXPANSION
 MID_SIZED_COMPANIES = [
     _ALL_EXISTING_BY_NAME[name] for name in sorted(_MID_SIZED_FROM_PRODUCT)
-] + NEW_MID_SIZED_COMPANIES
+] + NEW_MID_SIZED_COMPANIES + INDIA_MID_SIZED_EXPANSION
 
 CATEGORY_REGISTRIES = {
     "MNC": MNC_COMPANIES,
@@ -1831,9 +2133,47 @@ CATEGORY_DEFINITIONS = {
 }
 
 
+DOCUMENTED_AUTOMATION_SOURCES = {
+    "greenhouse",
+    "lever",
+    "workable",
+    "smartrecruiters",
+}
+MANUAL_SOURCE_MARKERS = (
+    "workday",
+    "oracle recruiting",
+    "successfactors",
+    "icims",
+    "taleo",
+    "phenom",
+    "eightfold",
+    "avature",
+    "njoyn",
+    "darwinbox",
+    "zoho recruit",
+    "freshteam",
+    "trakstar",
+    "kula",
+    "talentrecruit",
+    "ibegin",
+    "inflight",
+    "param ai",
+    "manual application",
+    "linkedin jobs",
+    "javascript careers page",
+)
+
+
+def requires_manual_approach(company: CompanySource) -> bool:
+    source_type = company.source_type.casefold().strip()
+    if source_type in DOCUMENTED_AUTOMATION_SOURCES:
+        return False
+    return any(marker in source_type for marker in MANUAL_SOURCE_MARKERS)
+
+
 def check_url(url: str) -> tuple[str, str]:
     if not url:
-        return "Not applicable", ""
+        return "Inaccessible (missing URL)", ""
     request = urllib.request.Request(
         url,
         headers={
@@ -1847,11 +2187,20 @@ def check_url(url: str) -> tuple[str, str]:
         with urllib.request.urlopen(request, timeout=15) as response:
             code = getattr(response, "status", 200)
             final_url = response.geturl()
-        return f"Verified live (HTTP {code})", final_url
+        final_path = urlparse(final_url).path.casefold()
+        error_paths = ("/error/", "/errors/", "page-not-found", "/404")
+        if any(marker in final_path for marker in error_paths):
+            return "Inaccessible (redirected to error page)", final_url
+        return f"Accessible (HTTP {code})", final_url
     except urllib.error.HTTPError as exc:
         if exc.code in {400, 401, 403, 406, 429, 451}:
-            return f"Reachable; automated access restricted (HTTP {exc.code})", url
-        return f"Needs manual review (HTTP {exc.code})", url
+            return (
+                f"Manual required (HTTP {exc.code}; automated access restricted)",
+                url,
+            )
+        if exc.code in {404, 410}:
+            return f"Inaccessible (HTTP {exc.code})", url
+        return f"Manual required (HTTP {exc.code}; verify in browser)", url
     except (urllib.error.URLError, TimeoutError, OSError) as exc:
         raw_reason = str(getattr(exc, "reason", exc)).replace("\n", " ")
         if "CERTIFICATE_VERIFY_FAILED" in raw_reason:
@@ -1859,10 +2208,10 @@ def check_url(url: str) -> tuple[str, str]:
         elif "timed out" in raw_reason.lower():
             reason = "connection timed out"
         elif "getaddrinfo failed" in raw_reason.lower():
-            reason = "DNS check failed"
+            return "Inaccessible (DNS check failed)", url
         else:
             reason = raw_reason[:90]
-        return f"Needs manual review ({reason})", url
+        return f"Manual required ({reason})", url
 
 
 def validate_urls(urls: list[str]) -> dict[str, tuple[str, str]]:
@@ -1877,7 +2226,18 @@ def validate_urls(urls: list[str]) -> dict[str, tuple[str, str]]:
 
 def validate_sources(companies: list[CompanySource]) -> dict[str, tuple[str, str]]:
     urls = sorted({item.jobs_url for item in companies if item.jobs_url})
-    return validate_urls(urls)
+    results = validate_urls(urls)
+    for company in companies:
+        status, final_url = results.get(
+            company.jobs_url,
+            ("Inaccessible (not checked)", company.jobs_url),
+        )
+        if status.startswith("Accessible") and requires_manual_approach(company):
+            results[company.jobs_url] = (
+                "Manual required (public page; company-specific adapter)",
+                final_url,
+            )
+    return results
 
 
 def append_redirect_note(notes: str, original_url: str, final_url: str) -> str:
@@ -1889,6 +2249,42 @@ def append_redirect_note(notes: str, original_url: str, final_url: str) -> str:
         return notes
     redirect_note = f"Automated check redirected to {final_host}."
     return f"{notes} {redirect_note}".strip()
+
+
+def _add_verification_formatting(sheet, final_row: int) -> None:
+    """Make dead links red and company-specific/manual sources blue by whole row."""
+    row_range = f"A5:O{final_row}"
+    status_range = f"M5:M{final_row}"
+    sheet.conditional_formatting.add(
+        row_range,
+        FormulaRule(
+            formula=['LEFT($M5,12)="Inaccessible"'],
+            fill=PatternFill("solid", fgColor="FEE2E2"),
+            stopIfTrue=True,
+        ),
+    )
+    sheet.conditional_formatting.add(
+        row_range,
+        FormulaRule(
+            formula=['LEFT($M5,15)="Manual required"'],
+            fill=PatternFill("solid", fgColor="DBEAFE"),
+            stopIfTrue=True,
+        ),
+    )
+    sheet.conditional_formatting.add(
+        status_range,
+        FormulaRule(
+            formula=['LEFT($M5,10)="Accessible"'],
+            fill=PatternFill("solid", fgColor="DCFCE7"),
+        ),
+    )
+    sheet.conditional_formatting.add(
+        status_range,
+        FormulaRule(
+            formula=['$M5="Not checked"'],
+            fill=PatternFill("solid", fgColor="E5E7EB"),
+        ),
+    )
 
 
 def _build_mnc_workbook(
@@ -1968,7 +2364,8 @@ def _build_mnc_workbook(
         final_url = ""
         if validation_results is not None:
             status, final_url = validation_results.get(
-                company.jobs_url, ("Needs manual review", company.jobs_url)
+                company.jobs_url,
+                ("Manual required (not checked)", company.jobs_url),
             )
         notes = append_redirect_note(company.notes, company.jobs_url, final_url)
         values = [
@@ -2050,27 +2447,7 @@ def _build_mnc_workbook(
         sheet.add_data_validation(validation)
         validation.add(cell_range)
 
-    green_fill = PatternFill("solid", fgColor="DCFCE7")
-    amber_fill = PatternFill("solid", fgColor="FEF3C7")
-    red_fill = PatternFill("solid", fgColor="FEE2E2")
-    gray_fill = PatternFill("solid", fgColor="E5E7EB")
-    status_range = f"M5:M{final_row}"
-    sheet.conditional_formatting.add(
-        status_range,
-        FormulaRule(formula=['LEFT(M5,8)="Verified"'], fill=green_fill),
-    )
-    sheet.conditional_formatting.add(
-        status_range,
-        FormulaRule(formula=['LEFT(M5,9)="Reachable"'], fill=amber_fill),
-    )
-    sheet.conditional_formatting.add(
-        status_range,
-        FormulaRule(formula=['LEFT(M5,5)="Needs"'], fill=red_fill),
-    )
-    sheet.conditional_formatting.add(
-        status_range,
-        FormulaRule(formula=['M5="Not checked"'], fill=gray_fill),
-    )
+    _add_verification_formatting(sheet, final_row)
 
     comments = {
         5: "Detected or researched ATS. Values containing 'candidate' must be confirmed before an adapter is enabled.",
@@ -2132,7 +2509,8 @@ def _add_product_company_sheet(
         final_url = ""
         if validation_results is not None:
             status, final_url = validation_results.get(
-                company.jobs_url, ("Needs manual review", company.jobs_url)
+                company.jobs_url,
+                ("Manual required (not checked)", company.jobs_url),
             )
         notes = append_redirect_note(company.notes, company.jobs_url, final_url)
         values = [
@@ -2195,21 +2573,7 @@ def _add_product_company_sheet(
             validation.add(cell_range)
 
     if not product_sheet.conditional_formatting:
-        status_range = f"M5:M{final_row}"
-        rules = [
-            ('LEFT(M5,8)="Verified"', "DCFCE7"),
-            ('LEFT(M5,9)="Reachable"', "FEF3C7"),
-            ('LEFT(M5,5)="Needs"', "FEE2E2"),
-            ('M5="Not checked"', "E5E7EB"),
-        ]
-        for formula, color in rules:
-            product_sheet.conditional_formatting.add(
-                status_range,
-                FormulaRule(
-                    formula=[formula],
-                    fill=PatternFill("solid", fgColor=color),
-                ),
-            )
+        _add_verification_formatting(product_sheet, final_row)
 
     product_sheet.oddFooter.center.text = "Product-Based Company Career Portal Registry"
     workbook.properties.title = "Company Career Portal Registry"
@@ -2698,7 +3062,7 @@ def _add_registry_sheet(
         if validation_results is not None:
             status, final_url = validation_results.get(
                 company.jobs_url,
-                ("Needs manual review", company.jobs_url),
+                ("Manual required (not checked)", company.jobs_url),
             )
         notes = append_redirect_note(company.notes, company.jobs_url, final_url)
         values = [
@@ -2790,21 +3154,7 @@ def _add_registry_sheet(
         sheet.add_data_validation(validation)
         validation.add(cell_range)
 
-    status_range = f"M5:M{final_row}"
-    rules = [
-        ('LEFT(M5,8)="Verified"', "DCFCE7"),
-        ('LEFT(M5,9)="Reachable"', "FEF3C7"),
-        ('LEFT(M5,5)="Needs"', "FEE2E2"),
-        ('M5="Not checked"', "E5E7EB"),
-    ]
-    for formula, color in rules:
-        sheet.conditional_formatting.add(
-            status_range,
-            FormulaRule(
-                formula=[formula],
-                fill=PatternFill("solid", fgColor=color),
-            ),
-        )
+    _add_verification_formatting(sheet, final_row)
 
     comments = {
         5: "Detected or researched ATS. Values containing 'candidate' must be confirmed before an adapter is enabled.",
@@ -2863,9 +3213,9 @@ def _populate_coverage_sheet(workbook: Workbook) -> None:
         "Category",
         "Definition",
         "Company Count",
-        "Verified Live",
-        "Access Restricted",
-        "Manual Review",
+        "Accessible",
+        "Manual Required",
+        "Inaccessible",
         "Duplicate Rule",
     ]
     for column, header in enumerate(headers, start=1):
@@ -2890,17 +3240,17 @@ def _populate_coverage_sheet(workbook: Workbook) -> None:
         sheet.cell(
             row_index,
             4,
-            f'=COUNTIF(\'{category}\'!$M$5:$M${last_row},"Verified*")',
+            f'=COUNTIF(\'{category}\'!$M$5:$M${last_row},"Accessible*")',
         )
         sheet.cell(
             row_index,
             5,
-            f'=COUNTIF(\'{category}\'!$M$5:$M${last_row},"Reachable*")',
+            f'=COUNTIF(\'{category}\'!$M$5:$M${last_row},"Manual required*")',
         )
         sheet.cell(
             row_index,
             6,
-            f'=COUNTIF(\'{category}\'!$M$5:$M${last_row},"Needs*")',
+            f'=COUNTIF(\'{category}\'!$M$5:$M${last_row},"Inaccessible*")',
         )
         sheet.cell(row_index, 7, "One primary category per company")
         for column in range(1, 8):
@@ -3392,14 +3742,13 @@ def render_preview(output_path: Path, preview_path: Path, *, sheet_name: str) ->
                 fill = "#FFFFFF" if row_number % 2 else "#F8FAFC"
                 text_color = "#1F2937"
                 font = normal_font
-                if column_number == 13:
-                    status = str(sheet.cell(row_number, column_number).value or "")
-                    if status.startswith("Verified"):
-                        fill = "#DCFCE7"
-                    elif status.startswith("Reachable"):
-                        fill = "#FEF3C7"
-                    elif status.startswith("Needs"):
-                        fill = "#FEE2E2"
+                status = str(sheet.cell(row_number, 13).value or "")
+                if status.startswith("Inaccessible"):
+                    fill = "#FEE2E2"
+                elif status.startswith("Manual required"):
+                    fill = "#DBEAFE"
+                elif column_number == 13 and status.startswith("Accessible"):
+                    fill = "#DCFCE7"
                 if column_number in {4, 5, 8} and sheet.cell(row_number, column_number).value:
                     text_color = "#0563C1"
             box = (x, y, x + column_width, y + row_height)
@@ -3435,16 +3784,21 @@ def render_coverage_preview(output_path: Path, preview_path: Path) -> None:
     status_counts: dict[str, tuple[int, int, int, int]] = {}
     for category, companies in CATEGORY_REGISTRIES.items():
         category_sheet = workbook[category]
-        verified = restricted = manual = 0
+        accessible = manual = inaccessible = 0
         for row in range(5, len(companies) + 5):
             status = str(category_sheet.cell(row, 13).value or "")
-            if status.startswith("Verified"):
-                verified += 1
-            elif status.startswith("Reachable"):
-                restricted += 1
-            elif status.startswith("Needs"):
+            if status.startswith("Accessible"):
+                accessible += 1
+            elif status.startswith("Manual required"):
                 manual += 1
-        status_counts[category] = (len(companies), verified, restricted, manual)
+            elif status.startswith("Inaccessible"):
+                inaccessible += 1
+        status_counts[category] = (
+            len(companies),
+            accessible,
+            manual,
+            inaccessible,
+        )
 
     total_counts = tuple(
         sum(counts[index] for counts in status_counts.values()) for index in range(4)
@@ -3643,7 +3997,7 @@ def main() -> int:
         for category, count in sorted(endpoint_counts.items()):
             print(f"Endpoint {category}: {count}")
         for endpoint, (status, _) in sorted(endpoint_results.items()):
-            if not status.startswith("Verified"):
+            if not status.startswith("Accessible"):
                 print(f"Endpoint review: {status} | {endpoint}")
     return 0
 

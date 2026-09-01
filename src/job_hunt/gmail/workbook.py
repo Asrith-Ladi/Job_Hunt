@@ -44,6 +44,8 @@ APPLICATION_STATUSES = [
     "reviewing",
     "shortlisted",
     "applied",
+    "interviewing",
+    "offer",
     "rejected",
     "withdrawn",
     "expired",
