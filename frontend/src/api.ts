@@ -1,5 +1,6 @@
 import type {
   AIUsageReport,
+  ApplicationPackageResult,
   AppConfig,
   ConfirmedSkillEvidence,
   DiscoveryFiltersSettings,
@@ -19,6 +20,7 @@ import type {
   ApplicationsResponse,
   ReferralCandidate,
   SavedApplication,
+  SearchProgress,
 } from "./types";
 
 export type DiscoveryMode = "company_portals" | "ats_sources";
@@ -40,7 +42,8 @@ async function request<T>(url: string, init?: RequestInit): Promise<T> {
   if (!response.ok) {
     if (
       (response.status === 404 || response.status === 405) &&
-      url.startsWith("/api/search/")
+      url.startsWith("/api/search/") &&
+      !url.startsWith("/api/search/progress/")
     ) {
       throw new Error(
         "The UI and backend versions do not match. Restart FastAPI, then refresh this page.",
@@ -98,9 +101,10 @@ export const api = {
   gmailRunHistory: () => request<{ runs: GmailRunHistoryEntry[] }>("/api/gmail/runs"),
   gmailRun: (runId: string) =>
     request<{ run: RunArtifact }>(`/api/gmail/runs/${encodeURIComponent(runId)}`),
-  searchGmail: (settings: RunSettings) =>
-    request<{ run: RunArtifact }>("/api/search/gmail", {
+  searchGmail: (settings: RunSettings, progressId = "") =>
+    request<{ run: RunArtifact; progress?: SearchProgress }>("/api/search/gmail", {
       method: "POST",
+      headers: progressId ? { "X-Job-Hunt-Progress-ID": progressId } : undefined,
       body: JSON.stringify({
         sources: settings.sources,
         labels_by_source: settings.labels_by_source,
@@ -169,6 +173,29 @@ export const api = {
         refresh_plan: options.refreshPlan ?? false,
       }),
     }),
+  finalizeApplicationPackage: (options: {
+    analysisId: string;
+    officialJobId: string;
+    generationId: string;
+    source: "gmail" | "company_portals" | "ats_sources";
+    row: JobRow;
+    referralCandidates: ReferralCandidate[];
+  }) => request<{
+    package: ApplicationPackageResult;
+    application: SavedApplication;
+    count: number;
+    drive_url: string;
+  }>("/api/job-intelligence/apply", {
+    method: "POST",
+    body: JSON.stringify({
+      analysis_id: options.analysisId,
+      official_job_id: options.officialJobId,
+      generation_id: options.generationId,
+      source: options.source,
+      row: options.row,
+      referral_candidates: options.referralCandidates,
+    }),
+  }),
   registry: () => request<RegistryResponse>("/api/registry/companies"),
   applications: () => request<ApplicationsResponse>("/api/applications"),
   saveApplication: (
@@ -191,15 +218,19 @@ export const api = {
     companyIds: string[],
     manualSources: ManualAtsSource[],
     filters: DiscoveryFiltersSettings,
+    progressId = "",
   ) =>
-    request<{ run: DiscoveryRunArtifact }>(`/api/search/${mode === "company_portals" ? "company-portals" : "ats-sources"}`, {
+    request<{ run: DiscoveryRunArtifact; progress?: SearchProgress }>(`/api/search/${mode === "company_portals" ? "company-portals" : "ats-sources"}`, {
       method: "POST",
+      headers: progressId ? { "X-Job-Hunt-Progress-ID": progressId } : undefined,
       body: JSON.stringify({
         company_ids: companyIds,
         manual_sources: manualSources,
         filters,
       }),
     }),
+  searchProgress: (progressId: string) =>
+    request<{ progress: SearchProgress }>(`/api/search/progress/${encodeURIComponent(progressId)}`),
   discoveryDownloadUrl: (mode: DiscoveryMode, runId: string) =>
     `${discoveryBase(mode)}/runs/${encodeURIComponent(runId)}/download`,
   networkConnections: (options: {

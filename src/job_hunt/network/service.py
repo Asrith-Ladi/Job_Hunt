@@ -150,10 +150,18 @@ class NetworkReviewService:
         signature = (stat.st_mtime_ns, stat.st_size)
         with self._cache_lock:
             if signature != self._cache_signature:
-                connections = load_registry_connection_records(
-                    self.registry_path,
-                    include_email=True,
-                )
+                try:
+                    connections = load_registry_connection_records(
+                        self.registry_path,
+                        include_email=True,
+                    )
+                except FileNotFoundError:
+                    raise
+                except (OSError, TypeError) as exc:
+                    raise ValueError(
+                        "The LinkedIn connection registry could not be read. "
+                        "Refresh the company registry from Drive and try again."
+                    ) from exc
                 self._cache = [
                     (record, connection_review_relevance(record.as_connection()))
                     for record in connections

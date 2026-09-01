@@ -59,7 +59,7 @@ The user approved implementation on 2026-08-14 and asked that the application re
 - Kept Gmail alert URLs and verified official employer URLs as separate evidence fields in every expanded Gmail record.
 - Added a useful-first product shell, meaningful readiness/status blocks, conditional configuration fields, responsive layouts, and stable `?tab=` links for direct reopening after deployment.
 - Made initial loading resilient: an unavailable optional source no longer prevents the rest of the workspace from opening, while a missing core configuration produces a retryable error state.
-- Removed the unused React `DiscoveryTab` branch and obsolete Google Sheet `drive_export` helper/test. The supported Drive workbooks, migration boundaries, ignored private inputs, and `legacy/streamlit_app.py` rollback reference remain intact.
+- Removed the unused React `DiscoveryTab` branch and obsolete Google Sheet `drive_export` helper/test. The supported Drive workbooks, migration boundaries, and ignored private inputs remained intact. The temporary Streamlit rollback reference was later deleted in Discussion 041.
 
 ## Verification
 

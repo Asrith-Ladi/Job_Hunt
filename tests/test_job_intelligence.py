@@ -4,7 +4,9 @@ import unittest
 from pathlib import Path
 
 from job_hunt.runtime.paths import AppPaths
+from job_hunt.runtime.files import read_json, write_json_atomic
 from job_hunt.integrations.ashby_postings import ExactPostingResolution
+from job_hunt.integrations.official_descriptions import OfficialDescriptionResolution
 from job_hunt.intelligence.service import (
     JobIntelligenceService,
     ResumePlanner,
@@ -30,6 +32,10 @@ POSTING = {
     "requisition_id": "REQ-123",
     "published_at": "2026-08-02",
     "official_url": "https://careers.example.com/jobs/123",
+    "description": (
+        "Build production machine-learning systems using Python and AWS. "
+        "Own deployment quality and collaborate with product teams."
+    ),
     "description_summary": "Build production machine-learning systems using Python and AWS.",
     "required_skills": ["Python", "Machine Learning", "AWS", "Context engineering"],
     "preferred_skills": ["Docker"],
@@ -155,6 +161,7 @@ class _FakeResumeLibrary:
         self.records = {}
         self.confirmed_evidence = []
         self.upload_context = []
+        self.package_upload_context = []
 
     def status(self):
         return {
@@ -222,11 +229,38 @@ class _FakeResumeLibrary:
         return {
             "file_id": f"drive-{Path(local_path).stem}",
             "drive_url": f"https://drive.example/files/{Path(local_path).name}",
+            "folder_id": "application-folder-id",
             "folder_url": "https://drive.example/application-folder",
             "folder_path": (
                 f"Job Hunt/Resumes/{company_name}/"
                 f"{prepared_on}_{role_name.replace(' ', '_')}"
             ),
+        }
+
+    def upload_application_file(
+        self,
+        local_path,
+        *,
+        folder_id,
+        folder_url,
+        folder_path,
+        mime_type,
+    ):
+        self.package_upload_context.append(
+            {
+                "file_name": Path(local_path).name,
+                "folder_id": folder_id,
+                "folder_url": folder_url,
+                "folder_path": folder_path,
+                "mime_type": mime_type,
+            }
+        )
+        return {
+            "file_id": f"drive-{Path(local_path).stem}",
+            "drive_url": f"https://drive.example/files/{Path(local_path).name}",
+            "folder_id": folder_id,
+            "folder_url": folder_url,
+            "folder_path": folder_path,
         }
 
     def store_confirmed_skill_evidence(self, entries):
@@ -247,6 +281,68 @@ def _fake_pdf_converter(_input_path: Path, output_path: Path) -> Path:
 
 
 class JobIntelligenceTests(unittest.TestCase):
+    def test_application_archive_recaptures_full_exact_ats_description(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            paths = AppPaths.from_project_root(root)
+            library = _FakeResumeLibrary(root)
+            posting = {
+                **POSTING,
+                "description": "",
+                "description_summary": "A short verified summary.",
+            }
+            service = JobIntelligenceService(
+                paths,
+                resume_library=library,
+                exact_posting_resolver=lambda _posting: ExactPostingResolution(
+                    True,
+                    posting={
+                        "description": (
+                            "## Responsibilities\n\n- Build production AI agents.\n"
+                            "- Own evaluation pipelines."
+                        )
+                    },
+                ),
+                description_resolver=lambda _posting: OfficialDescriptionResolution(),
+            )
+            analysis_id = "analysis_archive1234"
+            generation_id = "generation_archive1234"
+            write_json_atomic(
+                service.analysis_root / f"{analysis_id}.json",
+                {"analysis_id": analysis_id, "candidates": [posting]},
+            )
+            write_json_atomic(
+                service.artifact_index_path,
+                {
+                    "artifact_archive1234": {
+                        "artifact_id": "artifact_archive1234",
+                        "generation_id": generation_id,
+                        "analysis_id": analysis_id,
+                        "official_job_id": posting["official_job_id"],
+                        "kind": "resume_docx",
+                        "file_name": "Asrith_Ladi_AI_ML_Engineer_6Y.docx",
+                        "drive_url": "https://drive.example/resume",
+                        "folder_id": "application-folder-id",
+                        "folder_url": "https://drive.example/application-folder",
+                        "folder_path": "Job Hunt/Resumes/Example Company/2026-08-03_Role",
+                    }
+                },
+            )
+
+            package = service.archive_application_package(
+                analysis_id,
+                posting["official_job_id"],
+                generation_id,
+                source_job={"job_record_id": "alert-1"},
+            )
+
+            self.assertEqual(package["description_completeness"], "full")
+            self.assertEqual(package["description_source"], "captured_exact_ats_description")
+            details = read_json(
+                service.root / "application_packages" / generation_id / "Application_Details.json"
+            )
+            self.assertIn("Own evaluation pipelines", details["description"])
+
     def test_resume_planner_emits_usage_without_prompt_or_evidence_content(self):
         captured = []
         planner = ResumePlanner("unused", "gpt-5.6-luna", client=object())
@@ -517,6 +613,57 @@ class JobIntelligenceTests(unittest.TestCase):
             self.assertEqual(library.confirmed_evidence[0]["skill"], "Context engineering")
             self.assertTrue(result["requires_user_review"])
             self.assertTrue(result["warnings"])
+
+            package = service.archive_application_package(
+                analysis["analysis_id"],
+                POSTING["official_job_id"],
+                result["generation_id"],
+                source_job={
+                    "job_record_id": "alert-1",
+                    "provider": "greenhouse",
+                    "source_url": "https://linkedin.com/private-job",
+                },
+            )
+            self.assertEqual(package["application_status"], "applied")
+            self.assertTrue(package["full_description_available"])
+            self.assertEqual(
+                {item["file_name"] for item in package["files"]},
+                {
+                    "Job_Description.docx",
+                    "Job_Description.md",
+                    "Application_Details.json",
+                },
+            )
+            self.assertEqual(package["description_completeness"], "full")
+            self.assertEqual(package["capture_warning"], "")
+            self.assertTrue(
+                all(
+                    item["folder_id"] == "application-folder-id"
+                    for item in library.package_upload_context
+                )
+            )
+            package_root = (
+                paths.runtime_root
+                / "job_intelligence"
+                / "application_packages"
+                / result["generation_id"]
+            )
+            details = read_json(package_root / "Application_Details.json")
+            self.assertEqual(details["application_status"], "applied")
+            self.assertIn("Own deployment quality", details["description"])
+            markdown = (package_root / "Job_Description.md").read_text(encoding="utf-8")
+            self.assertIn(
+                "Build production machine-learning systems",
+                markdown,
+            )
+            self.assertNotIn("Eligibility snapshot", markdown)
+            from docx import Document
+
+            readable_jd = "\n".join(
+                paragraph.text
+                for paragraph in Document(package_root / "Job_Description.docx").paragraphs
+            )
+            self.assertIn("Build production machine-learning systems", readable_jd)
 
             first_artifact = result["artifacts"][0]
             path, metadata = service.artifact(first_artifact["artifact_id"])

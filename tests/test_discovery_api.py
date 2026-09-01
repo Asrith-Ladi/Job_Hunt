@@ -47,7 +47,14 @@ class _Connection:
 
 class _Gmail:
     def defaults(self):
-        return {"source_tabs": ["run_setup", "job_queue", "network_reviews"]}
+        return {
+            "source_tabs": [
+                "run_setup",
+                "job_queue",
+                "applications",
+                "network_reviews",
+            ]
+        }
 
     def workspace(self):
         return {"root_url": "", "source_url": ""}
@@ -96,8 +103,19 @@ class _Discovery:
         value["mode"] = options.mode
         return value
 
-    def search(self, options):
+    def search(self, options, *, progress_callback=None):
         self.last_options = options
+        if progress_callback:
+            progress_callback(
+                {
+                    "stage": "source_complete",
+                    "message": "Example: 4 extracted → 1 matched via greenhouse.",
+                    "current_item": "Example",
+                    "completed_items": 1,
+                    "total_items": 1,
+                    "matches_found": 1,
+                }
+            )
         value = dict(RUN)
         value.update({
             "mode": options.mode,
@@ -189,6 +207,22 @@ class DiscoveryApiTests(unittest.TestCase):
 
         self.assertTrue(ats.json()["run"]["transient"])
         self.assertEqual(ats.json()["run"]["file_name"], "")
+
+    def test_company_search_exposes_source_level_progress(self):
+        progress_id = "company-progress-test-123"
+        response = self.client.post(
+            "/api/search/company-portals",
+            headers={"X-Job-Hunt-Progress-ID": progress_id},
+            json={"company_ids": ["company-1"]},
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["progress"]["status"], "completed")
+        progress = self.client.get(f"/api/search/progress/{progress_id}").json()["progress"]
+        self.assertEqual(progress["source"], "company_portals")
+        self.assertEqual(progress["completed_items"], 1)
+        self.assertTrue(
+            any(event["stage"] == "source_complete" for event in progress["recent_events"])
+        )
 
     def test_source_limits_legacy_write_disable_and_download_identity(self):
         too_many = self.client.post(

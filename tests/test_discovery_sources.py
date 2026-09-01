@@ -4,8 +4,12 @@ from pathlib import Path
 
 import httpx
 
-from job_hunt.discovery.adapters import adapter_for
-from job_hunt.discovery.detection import detect_from_url, detect_source
+from job_hunt.discovery.adapters import adapter_for, filter_and_rank_jobs
+from job_hunt.discovery.detection import (
+    detect_embedded_sources,
+    detect_from_url,
+    detect_source,
+)
 from job_hunt.discovery.generic import GenericPublicDiscovery
 from job_hunt.discovery.http_client import (
     AccessStoppedError,
@@ -95,6 +99,84 @@ class DiscoverySourceTests(unittest.TestCase):
         )
         self.assertEqual(override.identifier, "manual-token")
         self.assertIn("explicit identifier", override.evidence)
+
+    def test_embedded_public_ats_detection_requires_an_explicit_provider_identity(self):
+        page = """
+        <iframe src="https://job-boards.greenhouse.io/embed/job_app?for=observeai"></iframe>
+        <script>window.unrelated = "https://example.com/jobs";</script>
+        """
+        detected = detect_embedded_sources(page)
+        self.assertEqual(len(detected), 1)
+        self.assertEqual(detected[0].provider, "greenhouse")
+        self.assertEqual(detected[0].identifier, "observeai")
+        self.assertTrue(detected[0].official_public_api)
+
+    def test_embedded_greenhouse_jobs_are_extracted_then_ranked_by_match_evidence(self):
+        careers_html = """
+        <html><body>
+          <iframe src="https://job-boards.greenhouse.io/embed/job_app?for=observeai"></iframe>
+        </body></html>
+        """
+        greenhouse_payload = {
+            "jobs": [
+                {
+                    "id": 1,
+                    "title": "AI Agent Engineer",
+                    "absolute_url": "https://job-boards.greenhouse.io/observeai/jobs/1",
+                    "location": {"name": "Bengaluru"},
+                    "content": "Build and evaluate AI agents.",
+                },
+                {
+                    "id": 2,
+                    "title": "Engagement Manager",
+                    "absolute_url": "https://job-boards.greenhouse.io/observeai/jobs/2",
+                    "location": {"name": "Bengaluru"},
+                    "content": "Lead customer programs for AI agents.",
+                },
+                {
+                    "id": 3,
+                    "title": "Finance Analyst",
+                    "absolute_url": "https://job-boards.greenhouse.io/observeai/jobs/3",
+                    "location": {"name": "Bengaluru"},
+                    "content": "Own finance operations.",
+                },
+            ]
+        }
+
+        def handler(request):
+            if request.url.host == "boards-api.greenhouse.io":
+                return httpx.Response(200, json=greenhouse_payload)
+            return httpx.Response(200, text=careers_html)
+
+        safe, raw = _safe_client(handler)
+        filters = DiscoveryFilters(
+            keyword="agent engineer",
+            capability_keywords="AI agents",
+            location="bengaluru",
+        )
+        try:
+            outcome = GenericPublicDiscovery(safe).discover(
+                SourceConfig(
+                    company="Observe.AI",
+                    provider="generic",
+                    identifier="",
+                    careers_url="https://www.observe.ai/careers",
+                ),
+                filters,
+                discovered_at="2026-08-25T10:00:00+05:30",
+            )
+        finally:
+            raw.close()
+
+        self.assertEqual(outcome.strategy, "embedded_public_ats_api")
+        self.assertEqual(outcome.detected_provider, "greenhouse")
+        self.assertEqual(outcome.detected_identifier, "observeai")
+        self.assertEqual(len(outcome.jobs), 3)
+        matches = filter_and_rank_jobs(outcome.jobs, filters)
+        self.assertEqual([job.title for job in matches], ["AI Agent Engineer", "Engagement Manager"])
+        self.assertEqual(matches[0].match_type, "title_match")
+        self.assertEqual(matches[1].match_type, "capability_description_match")
+        self.assertGreater(matches[0].match_score, matches[1].match_score)
 
     def test_public_http_boundary_blocks_private_redirects_and_access_controls(self):
         with self.assertRaises(PublicSourceError):

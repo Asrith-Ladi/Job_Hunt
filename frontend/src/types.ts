@@ -104,6 +104,7 @@ export interface RegistryResponse {
 
 export interface DiscoveryFiltersSettings {
   keyword: string;
+  capability_keywords: string;
   location: string;
   posted_within_days: number;
   include_unknown_dates: boolean;
@@ -135,6 +136,31 @@ export interface SourceCheckRow extends Record<string, Scalar> {
 export interface DiscoveryRunArtifact extends RunArtifact {
   mode: "company_portals" | "ats_sources";
   source_checks: SourceCheckRow[];
+}
+
+export interface SearchProgressEvent {
+  stage: string;
+  message: string;
+  current_item: string;
+  completed_items: number;
+  total_items: number;
+  matches_found: number;
+  at: string;
+}
+
+export interface SearchProgress {
+  progress_id: string;
+  source: "gmail" | "company_portals" | "ats_sources";
+  status: "running" | "completed" | "failed";
+  stage: string;
+  message: string;
+  current_item: string;
+  completed_items: number;
+  total_items: number;
+  matches_found: number;
+  started_at: string;
+  updated_at: string;
+  recent_events: SearchProgressEvent[];
 }
 
 export interface RunArtifact {
@@ -381,6 +407,7 @@ export interface OfficialJobCandidate {
   requisition_id: string;
   published_at: string;
   official_url: string;
+  description?: string;
   description_summary: string;
   required_skills: string[];
   preferred_skills: string[];
@@ -469,4 +496,34 @@ export interface GeneratedDocumentSet {
   requires_user_review: boolean;
   ats_alignment: AtsAlignmentComparison;
   baseline_unchanged: boolean;
+}
+
+export interface ApplicationPackageFile {
+  kind: "job_description_document" | "job_description" | "application_details";
+  file_name: string;
+  sha256: string;
+  drive_url: string;
+  folder_url: string;
+  folder_path: string;
+}
+
+export interface ApplicationPackageResult {
+  application_status: "applied";
+  applied_at: string;
+  official_url: string;
+  description_source:
+    | "verified_official_description"
+    | "collected_source_description"
+    | "verified_description_summary"
+    | "captured_official_json"
+    | "captured_official_json_ld"
+    | "captured_official_embedded_json"
+    | "captured_official_html"
+    | "captured_exact_ats_description";
+  description_completeness: "full" | "partial" | "summary_only";
+  full_description_available: boolean;
+  capture_warning: string;
+  folder_url: string;
+  folder_path: string;
+  files: ApplicationPackageFile[];
 }

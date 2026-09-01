@@ -4,6 +4,7 @@ import type {
   AIActionUsage,
   AIUsageEstimate,
   AIUsageReport,
+  ApplicationPackageResult,
   ConfirmedSkillEvidence,
   GeneratedArtifact,
   GeneratedArtifactKind,
@@ -12,6 +13,8 @@ import type {
   JobIntelligenceStatus,
   JobRow,
   OfficialJobCandidate,
+  ReferralCandidate,
+  SavedApplication,
   Scalar,
 } from "./types";
 
@@ -25,6 +28,12 @@ const OUTPUT_LABELS: Record<GeneratedArtifactKind, string> = {
   resume_docx: "Tailored resume (DOCX)",
   resume_pdf: "Tailored resume (PDF)",
   cover_letter: "Cover letter (DOCX)",
+};
+
+const APPLICATION_FILE_LABELS: Record<ApplicationPackageResult["files"][number]["kind"], string> = {
+  job_description_document: "Readable JD (DOCX)",
+  job_description: "JD text (Markdown)",
+  application_details: "System metadata (JSON)",
 };
 
 function text(value: Scalar | undefined): string {
@@ -176,6 +185,11 @@ function CandidateCard({
   const equivalentMatches = candidate.eligibility.equivalent_matched_skills ?? [];
   const exactMatches = candidate.eligibility.exact_matched_skills
     ?? candidate.eligibility.matched_skills.filter((skill) => !equivalentMatches.includes(skill));
+  const jdEvidenceLevel = candidate.description?.trim()
+    ? "Full JD available"
+    : candidate.description_summary?.trim()
+      ? "Summary only"
+      : "JD unavailable";
   return (
     <article className={`official-candidate ${selected ? "selected" : ""}`}>
       <label className="candidate-choice">
@@ -187,6 +201,9 @@ function CandidateCard({
       </label>
       <div className="candidate-links">
         <a href={candidate.official_url} target="_blank" rel="noreferrer">Open official job</a>
+        <span className={`value-chip ${candidate.description?.trim() ? "active" : "unknown"}`}>
+          {jdEvidenceLevel}
+        </span>
         <span className={`value-chip ${candidate.active_status}`}>{candidate.active_status || "unknown"}</span>
       </div>
 
@@ -205,6 +222,13 @@ function CandidateCard({
 
       <details className="candidate-details" open={selected}>
         <summary>JD evidence and eligibility details</summary>
+        {!candidate.description?.trim() && (
+          <p className="resume-warning">
+            Eligibility currently uses a verified summary and extracted requirements, not a
+            complete stored JD. Review the official page; the application archive will make
+            one bounded public capture attempt and label the result honestly.
+          </p>
+        )}
         <p className="jd-summary">{candidate.description_summary || "No reliable description summary was returned."}</p>
         <dl>
           <div><dt>Published</dt><dd>{candidate.published_at || "Not supplied"}</dd></div>
@@ -404,23 +428,30 @@ function AtsAlignmentCard({
 
 export default function JobIntelligencePanel({
   job,
+  source,
+  referralCandidates,
   googleConnected,
   onClose,
   onOfficialUrl,
+  onApplicationSaved,
 }: {
   job: JobRow;
+  source: "gmail" | "company_portals" | "ats_sources";
+  referralCandidates: ReferralCandidate[];
   googleConnected: boolean;
   onClose: () => void;
   onOfficialUrl?: (url: string) => void;
+  onApplicationSaved?: (application: SavedApplication) => void;
 }) {
   const [status, setStatus] = useState<JobIntelligenceStatus | null>(null);
   const [usageReport, setUsageReport] = useState<AIUsageReport | null>(null);
   const [analysis, setAnalysis] = useState<JobAnalysis | null>(null);
   const [selectedId, setSelectedId] = useState("");
   const [generation, setGeneration] = useState<GeneratedDocumentSet | null>(null);
+  const [applicationPackage, setApplicationPackage] = useState<ApplicationPackageResult | null>(null);
   const [evidenceDrafts, setEvidenceDrafts] = useState<Record<string, EvidenceDraft>>({});
   const [outputs, setOutputs] = useState<GeneratedArtifactKind[]>(["resume_docx"]);
-  const [busy, setBusy] = useState<"status" | "analysis" | "baseline" | "references" | "documents" | "">("status");
+  const [busy, setBusy] = useState<"status" | "analysis" | "baseline" | "references" | "documents" | "application" | "">("status");
   const [message, setMessage] = useState<{ kind: "error" | "info" | "success"; text: string } | null>(null);
   const baselineRef = useRef<HTMLInputElement>(null);
   const referencesRef = useRef<HTMLInputElement>(null);
@@ -470,6 +501,7 @@ export default function JobIntelligencePanel({
       [skillKey(skill)]: value,
     }));
     setGeneration(null);
+    setApplicationPackage(null);
   };
 
   const confirmedEvidence = useMemo(() => {
@@ -494,6 +526,7 @@ export default function JobIntelligencePanel({
     if (refresh && !window.confirm("Refresh ignores the saved result and creates a new Luna verification/extraction call. Continue?")) return;
     setBusy("analysis");
     setGeneration(null);
+    setApplicationPackage(null);
     setMessage({ kind: "info", text: refresh ? "Refreshing the official source..." : "Checking the private cache, then the official public source if needed..." });
     try {
       const response = await api.analyzeJob(job, refresh);
@@ -523,6 +556,7 @@ export default function JobIntelligencePanel({
   const chooseCandidate = (candidate: OfficialJobCandidate) => {
     setSelectedId(candidate.official_job_id);
     setGeneration(null);
+    setApplicationPackage(null);
     onOfficialUrl?.(candidate.official_url);
   };
 
@@ -538,6 +572,7 @@ export default function JobIntelligencePanel({
       const nextStatus = await api.uploadBaselineResume(file);
       setStatus(nextStatus);
       setGeneration(null);
+      setApplicationPackage(null);
       setMessage({ kind: "success", text: "The new Drive baseline is active. Earlier baseline versions remain unchanged." });
     } catch (error) {
       setMessage({ kind: "error", text: (error as Error).message });
@@ -560,6 +595,7 @@ export default function JobIntelligencePanel({
       const nextStatus = await api.uploadReferenceDocuments(selectedFiles);
       setStatus(nextStatus);
       setGeneration(null);
+      setApplicationPackage(null);
       setMessage({ kind: "success", text: `${selectedFiles.length} reference file(s) are available for truthful evidence matching.` });
     } catch (error) {
       setMessage({ kind: "error", text: (error as Error).message });
@@ -574,6 +610,7 @@ export default function JobIntelligencePanel({
       ? current.filter((value) => value !== kind)
       : [...current, kind]);
     setGeneration(null);
+    setApplicationPackage(null);
   };
 
   const generateDocuments = async () => {
@@ -601,12 +638,46 @@ export default function JobIntelligencePanel({
         confirmedSkillEvidence: confirmedEvidence,
       });
       setGeneration(response.generation);
+      setApplicationPackage(null);
       const folderPath = response.generation.artifacts[0]?.folder_path;
       setMessage({
         kind: "success",
         text: `${response.generation.artifacts.length} document(s) created in ${folderPath || "the Drive application folder"}.`,
       });
       await refreshUsage();
+    } catch (error) {
+      setMessage({ kind: "error", text: (error as Error).message });
+    } finally {
+      setBusy("");
+    }
+  };
+
+  const finalizeApplication = async () => {
+    if (!analysis || !selected || !generation) return;
+    const confirmed = window.confirm(
+      "This does not submit the application. Continue only after you applied manually. "
+      + "The job will be marked Applied and its JD package will be saved beside this resume.",
+    );
+    if (!confirmed) return;
+    setBusy("application");
+    setMessage({ kind: "info", text: "Saving the JD package in the generated resume folder, then updating application status..." });
+    try {
+      const response = await api.finalizeApplicationPackage({
+        analysisId: analysis.analysis_id,
+        officialJobId: selected.official_job_id,
+        generationId: generation.generation_id,
+        source,
+        row: job,
+        referralCandidates,
+      });
+      setApplicationPackage(response.package);
+      onApplicationSaved?.(response.application);
+      setMessage({
+        kind: "success",
+        text: response.package.full_description_available
+          ? "Application marked Applied. A full readable JD and application metadata were saved beside the generated resume in Drive."
+          : "Application marked Applied. The available JD evidence was saved with a review warning because the full description could not be verified.",
+      });
     } catch (error) {
       setMessage({ kind: "error", text: (error as Error).message });
     } finally {
@@ -621,8 +692,8 @@ export default function JobIntelligencePanel({
       <section className="intelligence-panel" role="dialog" aria-modal="true" aria-labelledby="intelligence-title">
         <header>
           <div>
-            <p className="eyebrow">Manual / per job</p>
-            <h2 id="intelligence-title">Official JD, eligibility and documents</h2>
+            <p className="eyebrow">Application workspace</p>
+            <h2 id="intelligence-title">Review and prepare this job</h2>
             <p>{text(job.title)} / {text(job.company)}{text(job.location) ? ` / ${text(job.location)}` : ""}</p>
           </div>
           <button className="icon-button" type="button" onClick={onClose} disabled={Boolean(busy)} aria-label="Close job tool">x</button>
@@ -817,6 +888,46 @@ export default function JobIntelligencePanel({
               {generation.change_notes.length > 0 && <><h4>What changed</h4><ul>{generation.change_notes.map((note) => <li key={note}>{note}</li>)}</ul></>}
               {generation.warnings.map((warning) => <p className="resume-warning" key={warning}>{warning}</p>)}
               <p className="review-warning"><strong>Review required:</strong> these are application drafts and were not submitted anywhere.</p>
+              <div className="application-package-action">
+                <div>
+                  <h4>After you apply manually</h4>
+                  <p>Save the verified JD and structured application details in this exact Drive folder, then move the tracked job to Applied.</p>
+                </div>
+                <button
+                  className="primary-button"
+                  type="button"
+                  disabled={Boolean(busy) || !driveReady || Boolean(applicationPackage)}
+                  onClick={finalizeApplication}
+                >
+                  {busy === "application"
+                    ? "Saving application package..."
+                    : applicationPackage
+                      ? "Applied package saved"
+                      : "I applied — save JD & details"}
+                </button>
+              </div>
+              {applicationPackage && (
+                <div className="application-package-result" role="status">
+                  <div>
+                    <strong>Applied package saved</strong>
+                    <span>{applicationPackage.folder_path}</span>
+                    <span className={`value-chip ${applicationPackage.description_completeness === "full" ? "active" : "unknown"}`}>
+                      JD capture: {applicationPackage.description_completeness.replace("_", " ")}
+                    </span>
+                    {applicationPackage.capture_warning && (
+                      <span className="resume-warning">{applicationPackage.capture_warning}</span>
+                    )}
+                  </div>
+                  <div>
+                    {applicationPackage.files.map((file) => (
+                      <a href={file.drive_url} target="_blank" rel="noreferrer" key={file.kind}>
+                        {APPLICATION_FILE_LABELS[file.kind]} ↗
+                      </a>
+                    ))}
+                    <a href={applicationPackage.folder_url} target="_blank" rel="noreferrer">Open folder ↗</a>
+                  </div>
+                </div>
+              )}
             </section>
           )}
         </div>

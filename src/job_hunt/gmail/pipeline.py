@@ -2,6 +2,7 @@
 
 import uuid
 from datetime import datetime, timezone
+from typing import Any, Callable, Mapping
 
 from job_hunt.jobs.dedupe import company_match, deduplicate
 from job_hunt.jobs.experience import classify_experience_fit
@@ -13,25 +14,83 @@ def _utc_now():
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
 
 
-def run_pipeline(config, gmail_reader, sheets_store=None, parsers=None, now=None):
+ProgressCallback = Callable[[Mapping[str, Any]], None]
+
+
+def _emit(progress_callback: ProgressCallback | None, **values: Any) -> None:
+    if progress_callback is not None:
+        progress_callback(values)
+
+
+def run_pipeline(
+    config,
+    gmail_reader,
+    sheets_store=None,
+    parsers=None,
+    now=None,
+    progress_callback: ProgressCallback | None = None,
+):
     config.validate()
     started_at = now or _utc_now()
     run_id = "run_{0}".format(uuid.uuid4().hex[:12])
-    messages = gmail_reader.list_alerts(config.gmail_query, max_messages=config.max_messages)
+    source_names = " + ".join(source.title() for source in config.active_sources)
+    _emit(
+        progress_callback,
+        stage="gmail_read",
+        message="Reading approved Gmail alert labels.",
+        current_item=f"{source_names} alerts",
+        completed_items=0,
+        total_items=len(config.active_sources),
+        matches_found=0,
+    )
+    messages = gmail_reader.list_alerts(
+        config.gmail_query,
+        max_messages=config.max_messages,
+        progress_callback=progress_callback,
+    )
+    _emit(
+        progress_callback,
+        stage="gmail_parse",
+        message=f"Found {len(messages)} messages. Parsing supported job alerts.",
+        current_item="Preparing alert parsers",
+        completed_items=0,
+        total_items=len(messages),
+        matches_found=0,
+    )
 
     parsed_jobs = []
     warnings = []
     supported_messages = 0
-    for message in messages:
+    progress_interval = max(1, len(messages) // 20)
+    for index, message in enumerate(messages, start=1):
         parser = select_parser(message, config.active_sources, parsers=parsers)
         if parser is None:
             warnings.append("Unsupported sender/format for message {0}.".format(message.message_id))
-            continue
-        supported_messages += 1
-        parsed = parser.parse(message, observed_at=started_at)
-        parsed_jobs.extend(parsed.jobs)
-        warnings.extend(parsed.warnings)
+        else:
+            supported_messages += 1
+            parsed = parser.parse(message, observed_at=started_at)
+            parsed_jobs.extend(parsed.jobs)
+            warnings.extend(parsed.warnings)
+        if index == 1 or index == len(messages) or index % progress_interval == 0:
+            _emit(
+                progress_callback,
+                stage="gmail_parse",
+                message=f"Parsing Gmail alerts: {index} of {len(messages)} checked.",
+                current_item=f"Alert {index} of {len(messages)}",
+                completed_items=index,
+                total_items=len(messages),
+                matches_found=len(parsed_jobs),
+            )
 
+    _emit(
+        progress_callback,
+        stage="gmail_deduplicate",
+        message=f"Parsed {len(parsed_jobs)} job rows. Removing duplicate alerts.",
+        current_item="Deduplicating parsed jobs",
+        completed_items=len(messages),
+        total_items=len(messages),
+        matches_found=len(parsed_jobs),
+    )
     deduped = deduplicate(parsed_jobs)
     included = []
     filtered_out = 0
@@ -56,6 +115,16 @@ def run_pipeline(config, gmail_reader, sheets_store=None, parsers=None, now=None
             filtered_out += 1
             continue
         included.append(job)
+
+    _emit(
+        progress_callback,
+        stage="gmail_filter",
+        message=f"Prepared {len(included)} matching jobs after deduplication and filters.",
+        current_item="Applying company and experience settings",
+        completed_items=len(messages),
+        total_items=len(messages),
+        matches_found=len(included),
+    )
 
     inserted = 0
     updated = 0

@@ -402,3 +402,58 @@ This log records mistakes, project incidents, durable fixes, and prevention rule
 - Fix: Stop the stale process and start API version 0.4.0 from the project's `.venv`; verify the route with a real Sarvam `agent` search. The API client now translates a 404/405 from new search routes into an explicit UI/backend version-mismatch instruction.
 - Prevention: Restart FastAPI after backend route changes, launch it through the documented project virtual environment, and verify `/api/openapi.json` exposes the expected search method before UI acceptance.
 - Evidence/related task: `frontend/src/api.ts`, `src/job_hunt/api/main.py`; Discussion 031.
+
+### I-036 - Dynamic careers page hid an embedded public ATS board
+
+- Date: 2026-08-25
+- Status: resolved
+- Area: company portal discovery / relevance filtering
+- Symptom: Observe.AI visibly listed an `AI Agent Engineer` opening, but a Company Portal search for `agent engineer` returned zero jobs.
+- Cause: The registry correctly pointed to the employer careers page, but that page rendered 17 jobs from an embedded Greenhouse board. Generic static HTML discovery found no job records. A single search field also gave title phrases and description-only capabilities equal relevance.
+- Fix: Detect explicit supported ATS board identities in public careers-page markup, fetch the documented public feed before filtering, split role-title phrases from broader capability terms, rank direct title evidence first, and show extracted-to-matched counts with the detected provider.
+- Prevention: Add provider-independent embedded-widget fixtures, verify live public-page detection when a new pattern is introduced, and never report a filtered zero without retaining the upstream extracted count.
+- Evidence/related task: `src/job_hunt/discovery/detection.py`, `src/job_hunt/discovery/generic.py`, `src/job_hunt/discovery/adapters.py`, `frontend/src/RunSetupTab.tsx`, `tests/test_discovery_sources.py`; Discussion 033.
+
+### I-037 - Long searches looked frozen while backend work continued
+
+- Date: 2026-08-25
+- Status: resolved
+- Area: search observability / React-FastAPI interaction
+- Symptom: A ten-company ATS or slow careers-page search displayed only `Searching ATS...`; users could not distinguish active work from a stalled request.
+- Cause: Search endpoints returned one final response and exposed no intermediate state. The frontend had only a source-level boolean, while useful provider and per-company stages existed inside synchronous service loops.
+- Fix: Add a bounded thread-safe progress store and polling endpoint, emit privacy-safe stages from Gmail and discovery services, and render the current item, completed count, matches, elapsed time, progress bar, and recent events in Search.
+- Prevention: Every newly introduced long-running search phase must emit a safe stage transition; progress events must never include message content, job descriptions, resumes, credentials, or personal contact data.
+- Evidence/related task: `src/job_hunt/runtime/search_progress.py`, `src/job_hunt/gmail/pipeline.py`, `src/job_hunt/discovery/service.py`, `frontend/src/RunSetupTab.tsx`, `tests/test_api.py`; Discussion 034.
+
+### I-038 - Gmail reads were sequential and the Drive registry lacked cached dimensions
+
+- Date: 2026-08-25
+- Status: resolved
+- Area: Gmail search performance / Network Reviews workbook compatibility
+- Symptom: A one-day Gmail search remained at `0 / 2` for more than two minutes, while Network Reviews returned only a generic operation failure.
+- Cause: Gmail downloaded every full message through a separate HTTP round trip and emitted no progress until all downloads finished. Separately, the valid Drive-synced registry omitted worksheet dimension metadata, so openpyxl read-only mode exposed `max_row` and `max_column` as `None` and the Network loader raised a `TypeError`.
+- Fix: Download full Gmail messages through bounded batches of 25 with one retry for partial failures, a 30-second per-request network timeout, and privacy-safe fetch counts. Force read-only worksheet-dimension calculation when the cache is absent, without rewriting the Drive-authoritative workbook.
+- Prevention: Never assume spreadsheet dimension caches are present, and never place a potentially large sequence of remote item reads behind one opaque progress stage. Regression tests cover dimensionless XLSX input, Gmail batching, safe progress, and partial-batch retry.
+- Evidence/related task: `src/job_hunt/integrations/gmail.py`, `src/job_hunt/network/referrals.py`, `tests/test_gmail_integration.py`, `tests/test_network_reviews.py`; Discussion 037.
+
+### I-039 - A successful HTTP response could hide an obsolete or manual career source
+
+- Date: 2026-08-31
+- Status: resolved in generator; canonical workbook rebuild pending
+- Area: company registry / source verification
+- Symptom: An old ATS board could return `404`, a careers URL could redirect to a branded error page with HTTP `200`, and bot-protected or company-specific portals could be mistaken for dead links.
+- Cause: Registry validation compressed all failures into broad reachability labels and formatted only the status cell. It did not distinguish a proven dead source from a public source that needs browser review or a company-specific adapter.
+- Fix: Classify every checked row as `Accessible`, `Manual required`, or `Inaccessible`; detect HTTP 404/410, DNS failures, and error-page redirects as inaccessible; retain access restrictions, timeouts, and undocumented ATS pages as manual; color the entire inaccessible row red and the entire manual row blue. Replace obsolete American Express, Honeywell, Toyota India, and Redis routes with current official sources.
+- Prevention: Re-run the bounded public audit before publishing a registry revision, never call an anti-bot response a dead employer page, and keep direct official portals separate from historical discovery metadata.
+- Evidence/related task: `scripts/build_company_source_registry.py`, `tests/test_company_source_registry.py`; Discussion 038.
+
+### I-040 - A summary or structured value was archived as the job description
+
+- Date: 2026-09-01
+- Status: resolved locally; deployment verification pending
+- Area: applied-job evidence / Drive resume folder
+- Symptom: `Job_Description.md` could contain only a short AI-generated summary, JSON/Python-shaped text, and unrelated eligibility/document sections, making the actual responsibilities difficult to find.
+- Cause: The archive selected `description`, collected alert text, or `description_summary` with a truthy fallback and labeled every non-summary value as full. Generic string conversion serialized containers, and one mixed Markdown document tried to serve human review and machine metadata simultaneously.
+- Fix: Normalize only supported description structures; retry an exact public ATS record and then a bounded official-page JSON-LD/embedded/static capture; classify evidence as full, partial, or summary-only; save a readable `Job_Description.docx` plus clean Markdown; retain eligibility and lifecycle metadata in `Application_Details.json`.
+- Prevention: Every applied-job package test must assert the capture classification, readable DOCX, clean Markdown, and protected-host boundary. A summary must always carry an explicit review warning and `full_description_available=false`.
+- Evidence/related task: `src/job_hunt/integrations/official_descriptions.py`, `src/job_hunt/intelligence/service.py`, `src/job_hunt/resumes/outputs.py`, `tests/test_official_descriptions.py`; Discussion 040.

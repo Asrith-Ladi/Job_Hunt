@@ -77,6 +77,7 @@ def parse_iso_datetime(value: Any) -> datetime | None:
 @dataclass(frozen=True)
 class DiscoveryFilters:
     keyword: str = ""
+    capability_keywords: str = ""
     location: str = ""
     posted_within_days: int = 15
     include_unknown_dates: bool = True
@@ -95,14 +96,15 @@ class DiscoveryFilters:
         if self.target_experience_max_years < self.target_experience_min_years:
             raise ValueError("Target maximum experience must be at least the minimum.")
 
-    def matches_text(self, *values: str) -> bool:
-        query = clean_text(self.keyword).casefold()
+    @staticmethod
+    def _matching_terms(query_value: str, *values: str) -> tuple[str, ...]:
+        query = clean_text(query_value).casefold()
         if not query:
-            return True
+            return ()
 
         def normalized(value: str) -> str:
             text = clean_text(value).casefold().replace("_", " ")
-            return re.sub(r"[^\w+#.]+", " ", text, flags=re.UNICODE).strip()
+            return re.sub(r"[^\w+#]+", " ", text, flags=re.UNICODE).strip()
 
         searchable = f" {' '.join(normalized(value) for value in values)} "
         searchable_tokens = searchable.split()
@@ -134,10 +136,49 @@ class DiscoveryFilters:
                     return True
             return width == 1 and len(term) >= 4 and term in compact_token_groups
 
-        return any(
-            term and term_matches(term)
+        return tuple(
+            term
             for term in terms
+            if term and term_matches(term)
         )
+
+    def matches_text(self, *values: str) -> bool:
+        """Compatibility helper for the legacy role-keyword field."""
+
+        if not clean_text(self.keyword):
+            return True
+        return bool(self._matching_terms(self.keyword, *values))
+
+    def relevance_match(
+        self,
+        *,
+        title: str,
+        description: str = "",
+        department: str = "",
+    ) -> tuple[str, tuple[str, ...], int] | None:
+        """Return a ranked deterministic match without conflating titles and JD skills."""
+
+        role_query = clean_text(self.keyword)
+        capability_query = clean_text(self.capability_keywords)
+        if not role_query and not capability_query:
+            return "unfiltered", (), 0
+
+        title_terms = self._matching_terms(role_query, title)
+        if title_terms:
+            return "title_match", title_terms, 100
+
+        capability_title_terms = self._matching_terms(capability_query, title, department)
+        capability_terms = self._matching_terms(
+            capability_query,
+            title,
+            department,
+            description,
+        )
+        if capability_title_terms:
+            return "capability_title_match", capability_title_terms, 70
+        if capability_terms:
+            return "capability_description_match", capability_terms, 50
+        return None
 
     def matches_location(self, location: str) -> bool:
         requested = clean_text(self.location).casefold()
@@ -201,6 +242,9 @@ class DiscoveryJob:
     source_status: str
     application_status: str = "not_started"
     notes: str = ""
+    match_type: str = ""
+    matched_terms: str = ""
+    match_score: int = 0
 
     @classmethod
     def create(

@@ -57,6 +57,7 @@ class _FakeWorkflow:
             "source_tabs": [
                 "run_setup",
                 "job_queue",
+                "applications",
                 "network_reviews",
             ]
         }
@@ -88,8 +89,19 @@ class _FakeWorkflow:
         self.last_options = options
         return dict(RUN)
 
-    def search(self, options):
+    def search(self, options, *, progress_callback=None):
         self.last_options = options
+        if progress_callback:
+            progress_callback(
+                {
+                    "stage": "gmail_parse",
+                    "message": "Parsing Gmail alerts: 2 of 2 checked.",
+                    "current_item": "Alert 2 of 2",
+                    "completed_items": 2,
+                    "total_items": 2,
+                    "matches_found": 1,
+                }
+            )
         value = dict(RUN)
         value.update({"file_name": "", "drive_url": "", "transient": True})
         return value
@@ -192,6 +204,7 @@ class _FakeIntelligence:
         self.reference_files = []
         self.analyzed_job = None
         self.generation_options = {}
+        self.application_package_options = {}
 
     def status(self):
         return {
@@ -306,6 +319,59 @@ class _FakeIntelligence:
             ),
         }
 
+    def archive_application_package(
+        self,
+        analysis_id,
+        official_job_id,
+        generation_id,
+        *,
+        source_job,
+    ):
+        self.application_package_options = {
+            "analysis_id": analysis_id,
+            "official_job_id": official_job_id,
+            "generation_id": generation_id,
+            "source_job": dict(source_job),
+        }
+        folder_path = (
+            "Job Hunt/Resumes/Example Company/"
+            "2026-08-03_Senior_Machine_Learning_Engineer"
+        )
+        return {
+            "application_status": "applied",
+            "applied_at": "2026-08-25T20:00:00+05:30",
+            "official_url": "https://careers.example.com/jobs/123",
+            "description_source": "verified_official_description",
+            "description_completeness": "full",
+            "full_description_available": True,
+            "capture_warning": "",
+            "folder_url": "https://drive.example/application-folder",
+            "folder_path": folder_path,
+            "files": [
+                {
+                    "kind": "job_description_document",
+                    "file_name": "Job_Description.docx",
+                    "drive_url": "https://drive.example/job-description-docx",
+                    "folder_url": "https://drive.example/application-folder",
+                    "folder_path": folder_path,
+                },
+                {
+                    "kind": "job_description",
+                    "file_name": "Job_Description.md",
+                    "drive_url": "https://drive.example/job-description",
+                    "folder_url": "https://drive.example/application-folder",
+                    "folder_path": folder_path,
+                },
+                {
+                    "kind": "application_details",
+                    "file_name": "Application_Details.json",
+                    "drive_url": "https://drive.example/application-details",
+                    "folder_url": "https://drive.example/application-folder",
+                    "folder_path": folder_path,
+                },
+            ],
+        }
+
 
 class ApiTests(unittest.TestCase):
     def setUp(self):
@@ -336,7 +402,7 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(self.client.get("/api/health").json(), {"status": "ok"})
         self.assertEqual(
             self.client.get("/api/config").json()["source_tabs"],
-            ["run_setup", "job_queue", "network_reviews"],
+            ["run_setup", "job_queue", "applications", "network_reviews"],
         )
         self.assertTrue(self.client.get("/api/auth/google/status").json()["connected"])
 
@@ -375,6 +441,22 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(response.json()["run"]["drive_url"], "")
         self.assertEqual(self.workflow.last_options.lookback_days, 7)
         self.assertEqual(self.workflow.last_options.sources, ("linkedin",))
+
+    def test_gmail_search_exposes_safe_pollable_progress(self):
+        progress_id = "gmail-progress-test-123"
+        response = self.client.post(
+            "/api/search/gmail",
+            headers={"X-Job-Hunt-Progress-ID": progress_id},
+            json={"sources": ["linkedin", "naukri"]},
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["progress"]["status"], "completed")
+        snapshot = self.client.get(f"/api/search/progress/{progress_id}")
+        self.assertEqual(snapshot.status_code, 200)
+        progress = snapshot.json()["progress"]
+        self.assertEqual(progress["source"], "gmail")
+        self.assertEqual(progress["matches_found"], 1)
+        self.assertTrue(any(event["stage"] == "gmail_parse" for event in progress["recent_events"]))
 
     def test_application_queue_routes_persist_only_explicit_job_updates(self):
         empty = self.client.get("/api/applications")
@@ -520,6 +602,39 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(
             self.intelligence.generation_options["confirmed_skill_evidence"][0]["skill"],
             "Context engineering",
+        )
+        applied = self.client.post(
+            "/api/job-intelligence/apply",
+            json={
+                "analysis_id": "analysis_example123",
+                "official_job_id": "official_example123",
+                "generation_id": "generation_example123",
+                "source": "company_portals",
+                "row": {
+                    "job_record_id": "job-1",
+                    "company": "Example Company",
+                    "title": "Senior Machine Learning Engineer",
+                    "application_status": "saved",
+                },
+                "referral_candidates": [],
+            },
+        )
+        self.assertEqual(applied.status_code, 200)
+        self.assertEqual(
+            applied.json()["application"]["row"]["application_status"],
+            "applied",
+        )
+        self.assertEqual(
+            applied.json()["application"]["row"]["job_description_drive_url"],
+            "https://drive.example/job-description-docx",
+        )
+        self.assertEqual(
+            applied.json()["application"]["row"]["job_description_completeness"],
+            "full",
+        )
+        self.assertEqual(
+            self.intelligence.application_package_options["generation_id"],
+            "generation_example123",
         )
         download = self.client.get(
             "/api/job-intelligence/artifacts/artifact_example123/download"

@@ -184,6 +184,7 @@ class AshbyExactPostingResolver:
                 "ats_job_url": canonical_public_url(exact.get("jobUrl")),
                 "apply_url": canonical_public_url(exact.get("applyUrl")),
                 "description": description,
+                "description_html": str(exact.get("descriptionHtml") or "")[:100_000],
                 "source_url": endpoint,
                 "source_fingerprint": _source_fingerprint(board, exact),
             },

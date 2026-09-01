@@ -5,15 +5,20 @@ from __future__ import annotations
 import hashlib
 import json
 import re
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from email.utils import parsedate_to_datetime
 from html.parser import HTMLParser
 from typing import Any
 from urllib.parse import urljoin, urlsplit
 from xml.etree import ElementTree
 
-from job_hunt.discovery.adapters import build_lever_job, html_to_text
-from job_hunt.discovery.http_client import PublicSourceError, SafeHttpClient
+from job_hunt.discovery.adapters import adapter_for, build_lever_job, html_to_text
+from job_hunt.discovery.detection import detect_embedded_sources
+from job_hunt.discovery.http_client import (
+    AccessStoppedError,
+    PublicSourceError,
+    SafeHttpClient,
+)
 from job_hunt.discovery.models import (
     DiscoveryFilters,
     DiscoveryJob,
@@ -56,6 +61,24 @@ PROTECTED_OR_AGGREGATOR_HOSTS = {
 }
 MAX_SITEMAP_URLS = 2000
 MAX_SITEMAP_CHILDREN = 5
+MAX_GENERIC_JOBS = 500
+
+
+@dataclass(frozen=True)
+class GenericDiscoveryOutcome:
+    jobs: list[DiscoveryJob]
+    strategy: str
+    warning: str = ""
+    source_url: str = ""
+    detected_provider: str = ""
+    detected_identifier: str = ""
+
+    def __iter__(self):
+        """Preserve the former three-value result contract for internal callers."""
+
+        yield self.jobs
+        yield self.strategy
+        yield self.warning
 
 
 def _local_name(tag: str) -> str:
@@ -239,7 +262,7 @@ class GenericPublicDiscovery:
         filters: DiscoveryFilters,
         *,
         discovered_at: str,
-    ) -> tuple[list[DiscoveryJob], str, str]:
+    ) -> GenericDiscoveryOutcome:
         warnings: list[str] = []
         if source.public_feed_url:
             try:
@@ -248,22 +271,26 @@ class GenericPublicDiscovery:
                 warnings.append(str(exc))
             else:
                 if jobs:
-                    return jobs, "public_feed", ""
+                    return GenericDiscoveryOutcome(
+                        jobs=jobs,
+                        strategy="public_feed",
+                        source_url=source.public_feed_url,
+                    )
 
         page_url = source.portal_url or source.careers_url
         if page_url:
             try:
-                jobs = self._static_page(source, page_url, filters, discovered_at)
+                page_outcome = self._static_page(source, page_url, filters, discovered_at)
             except PublicSourceError as exc:
                 warnings.append(str(exc))
             else:
-                if jobs:
-                    strategy = (
-                        "embedded_structured_json"
-                        if jobs[0].source_type == "official_embedded_ats_json"
-                        else "static_html"
+                if page_outcome.warning:
+                    warnings.append(page_outcome.warning)
+                if page_outcome.jobs or page_outcome.detected_provider:
+                    return replace(
+                        page_outcome,
+                        warning="; ".join(dict.fromkeys(warnings)),
                     )
-                    return jobs, strategy, "; ".join(warnings)
 
             try:
                 jobs = self._sitemaps(source, page_url, filters, discovered_at)
@@ -271,8 +298,18 @@ class GenericPublicDiscovery:
                 warnings.append(str(exc))
             else:
                 if jobs:
-                    return jobs, "sitemap", "; ".join(warnings)
-        return [], "manual_review", "; ".join(dict.fromkeys(warnings))
+                    return GenericDiscoveryOutcome(
+                        jobs=jobs,
+                        strategy="sitemap",
+                        warning="; ".join(dict.fromkeys(warnings)),
+                        source_url=jobs[0].source_url,
+                    )
+        return GenericDiscoveryOutcome(
+            jobs=[],
+            strategy="manual_review",
+            warning="; ".join(dict.fromkeys(warnings)),
+            source_url=source.public_feed_url or source.portal_url or source.careers_url,
+        )
 
     def _feed(
         self,
@@ -333,10 +370,9 @@ class GenericPublicDiscovery:
                 filters=filters,
                 source_confidence="medium-high",
             )
-            if self._passes(job, filters):
-                jobs.append(job)
-                if len(jobs) >= filters.max_jobs_per_source:
-                    break
+            jobs.append(job)
+            if len(jobs) >= MAX_GENERIC_JOBS:
+                break
         return jobs
 
     def _static_page(
@@ -345,7 +381,7 @@ class GenericPublicDiscovery:
         page_url: str,
         filters: DiscoveryFilters,
         discovered_at: str,
-    ) -> list[DiscoveryJob]:
+    ) -> GenericDiscoveryOutcome:
         response = self.http.get(page_url, accept="text/html, application/xhtml+xml")
         parser = _CareerHtmlParser()
         try:
@@ -353,6 +389,42 @@ class GenericPublicDiscovery:
             parser.close()
         except Exception as exc:
             raise PublicSourceError("The public careers HTML could not be parsed safely.") from exc
+
+        embedded_warnings: list[str] = []
+        empty_embedded_outcome: GenericDiscoveryOutcome | None = None
+        for detected in detect_embedded_sources(response.text):
+            detected_source = replace(
+                source,
+                provider=detected.provider,
+                identifier=detected.identifier,
+                region=detected.region,
+            )
+            adapter = adapter_for(detected.provider, self.http)
+            endpoint = adapter.endpoint(detected_source)
+            try:
+                ats_jobs = adapter.fetch(detected_source, filters)
+            except (AccessStoppedError, PublicSourceError, ValueError) as exc:
+                embedded_warnings.append(
+                    f"Embedded {detected.provider} source was unavailable: {clean_text(exc)}"
+                )
+                continue
+            outcome = GenericDiscoveryOutcome(
+                jobs=ats_jobs,
+                strategy="embedded_public_ats_api",
+                source_url=endpoint,
+                detected_provider=detected.provider,
+                detected_identifier=detected.identifier,
+            )
+            if ats_jobs:
+                return outcome
+            if empty_embedded_outcome is None:
+                empty_embedded_outcome = outcome
+
+        if empty_embedded_outcome is not None:
+            return replace(
+                empty_embedded_outcome,
+                warning="; ".join(dict.fromkeys(embedded_warnings)),
+            )
 
         embedded_jobs = self._embedded_lever_jobs(
             parser.structured_json,
@@ -362,7 +434,14 @@ class GenericPublicDiscovery:
             source_url=response.url,
         )
         if embedded_jobs:
-            return embedded_jobs
+            return GenericDiscoveryOutcome(
+                jobs=embedded_jobs,
+                strategy="embedded_structured_json",
+                warning="",
+                source_url=response.url,
+                detected_provider="lever",
+                detected_identifier=embedded_jobs[0].source_identifier,
+            )
 
         jobs: list[DiscoveryJob] = []
         seen: set[str] = set()
@@ -405,10 +484,14 @@ class GenericPublicDiscovery:
                     filters=filters,
                     source_confidence="high",
                 )
-                if self._passes(job, filters):
-                    jobs.append(job)
-                    if len(jobs) >= filters.max_jobs_per_source:
-                        return jobs
+                jobs.append(job)
+                if len(jobs) >= MAX_GENERIC_JOBS:
+                    return GenericDiscoveryOutcome(
+                        jobs=jobs,
+                        strategy="static_html",
+                        warning="; ".join(dict.fromkeys(embedded_warnings)),
+                        source_url=response.url,
+                    )
 
         allowed = _allowed_hosts(source)
         for href, label in parser.links:
@@ -445,11 +528,15 @@ class GenericPublicDiscovery:
                 source_confidence="medium",
                 source_status="discovery_only",
             )
-            if self._passes(job, filters):
-                jobs.append(job)
-                if len(jobs) >= filters.max_jobs_per_source:
-                    break
-        return jobs
+            jobs.append(job)
+            if len(jobs) >= MAX_GENERIC_JOBS:
+                break
+        return GenericDiscoveryOutcome(
+            jobs=jobs,
+            strategy="static_html",
+            warning="; ".join(dict.fromkeys(embedded_warnings)),
+            source_url=response.url,
+        )
 
     def _embedded_lever_jobs(
         self,
@@ -491,11 +578,11 @@ class GenericPublicDiscovery:
                     source_url=source_url,
                     source_type="official_embedded_ats_json",
                 )
-                if job is None or not job.title or not self._passes(job, filters):
+                if job is None or not job.title:
                     continue
                 seen.add(official_url)
                 jobs.append(job)
-                if len(jobs) >= filters.max_jobs_per_source:
+                if len(jobs) >= MAX_GENERIC_JOBS:
                     return jobs
         return jobs
 
@@ -554,10 +641,9 @@ class GenericPublicDiscovery:
                 source_confidence="low-medium",
                 source_status="discovery_only",
             )
-            if self._passes(job, filters):
-                jobs.append(job)
-                if len(jobs) >= filters.max_jobs_per_source:
-                    break
+            jobs.append(job)
+            if len(jobs) >= MAX_GENERIC_JOBS:
+                break
         return jobs
 
     def _collect_sitemap(
@@ -605,15 +691,3 @@ class GenericPublicDiscovery:
                 output.append((location, fields.get("lastmod", ""), source_sitemap))
                 if len(output) >= MAX_SITEMAP_URLS:
                     break
-
-    @staticmethod
-    def _passes(job: DiscoveryJob, filters: DiscoveryFilters) -> bool:
-        if not filters.matches_text(job.title, job.description, job.department):
-            return False
-        if not filters.matches_location(job.location):
-            return False
-        if not filters.matches_date(job.posted_at):
-            return False
-        if filters.strict_experience_filter and job.experience_fit == "outside_target":
-            return False
-        return True

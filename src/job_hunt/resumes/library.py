@@ -595,11 +595,46 @@ class DriveResumeLibrary:
             "drive_url": str(
                 uploaded.get("webViewLink") or drive_file_url(uploaded["id"])
             ),
+            "folder_id": str(application_folder["id"]),
             "folder_url": drive_folder_url(str(application_folder["id"])),
             "folder_path": (
                 f"Job Hunt/{APPLICATION_RESUMES_FOLDER_NAME}/"
                 f"{company_folder_name}/{application_folder_name}"
             ),
+        }
+
+    def upload_application_file(
+        self,
+        local_path: Path,
+        *,
+        folder_id: str,
+        folder_url: str,
+        folder_path: str,
+        mime_type: str,
+    ) -> dict[str, str]:
+        """Upload or replace a support file in an existing generated-resume folder."""
+
+        resolved_folder_id = str(folder_id or "").strip()
+        if not re.fullmatch(r"[A-Za-z0-9_-]{3,200}", resolved_folder_id):
+            raise ResumeLibraryError(
+                "The generated resume folder identity is unavailable. Generate documents again."
+            )
+        drive = self._require_drive()
+        uploaded = upload_or_update_file(
+            drive,
+            Path(local_path),
+            parent_id=resolved_folder_id,
+            mime_type=mime_type,
+        )
+        return {
+            "file_id": str(uploaded["id"]),
+            "drive_url": str(
+                uploaded.get("webViewLink") or drive_file_url(uploaded["id"])
+            ),
+            "folder_id": resolved_folder_id,
+            "folder_url": str(folder_url or "").strip()
+            or drive_folder_url(resolved_folder_id),
+            "folder_path": str(folder_path or "").strip(),
         }
 
     def record_artifacts(self, records: Iterable[Mapping[str, Any]]) -> None:

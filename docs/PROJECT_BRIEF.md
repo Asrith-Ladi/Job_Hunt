@@ -4,13 +4,13 @@
 
 - Project type: personal job-search utility first.
 - Future direction: support additional users only after the personal workflow is reliable.
-- Current phase: a unified React/FastAPI Search and Results & Applications workflow covers Gmail, registry-driven Company Portals, and documented public ATS. Searches are temporary; explicit tracking actions persist one deduplicated Drive application queue. Offline Network Reviews and explicit per-job official-JD/eligibility/tailored-resume actions are also implemented locally. Private internet deployment and scheduling remain later decisions.
+- Current phase: a React/FastAPI Search and temporary Results workflow covers Gmail, registry-driven Company Portals, and documented public ATS, while a separate Applications workspace displays the deduplicated Drive-backed tracking queue. Offline Network Reviews and explicit per-job official-JD/eligibility/tailored-resume actions are also implemented locally. Private internet deployment and scheduling remain later decisions.
 - Implementation authorization: granted on 2026-07-19 for Discussion 001.
 - Detailed background: `reference/JOB_AUTOMATION_PLAN.md` is reference only.
 
 ## Main task
 
-Build a manually triggered, UI-configurable tool with one conditional Search screen for Gmail, Company Portals, and ATS Sources, one unified Results & Applications workspace, and a separate Network Reviews workspace. Gmail normalizes approved LinkedIn and Naukri alerts and adds offline, unverified same-company referral suggestions from the saved LinkedIn snapshot. Company Portals rotates through small selections from the Drive-authoritative company registry. ATS Sources reads documented public Greenhouse, Lever, Workable, and SmartRecruiters endpoints. Search results remain temporary and are reviewed together without destructive merging; only explicit user tracking actions upsert the selected source record into one canonical Drive application queue. Any result row can open a separate manual job tool; paid official research and tailored-resume generation never run as part of source search.
+Build a manually triggered, UI-configurable tool with one conditional Search screen for Gmail, Company Portals, and ATS Sources, a temporary Results workspace, a persistent Applications workspace, and a separate Network Reviews workspace. Gmail normalizes approved LinkedIn and Naukri alerts and adds offline, unverified same-company referral suggestions from the saved LinkedIn snapshot. Company Portals rotates through small selections from the Drive-authoritative company registry. ATS Sources reads documented public Greenhouse, Lever, Workable, and SmartRecruiters endpoints. Search results remain temporary and are reviewed together without destructive merging; only explicit user tracking actions upsert the selected source record into one canonical Drive application queue. Any result or tracked-application row can open the same manual job tool; paid official research and tailored-resume generation never run as part of source search.
 
 ## Why this is the first MVP
 
@@ -27,9 +27,11 @@ Build a manually triggered, UI-configurable tool with one conditional Search scr
 3. Review shared intent plus only the conditional settings needed by the checked sources. Company Portal and ATS searches accept comma-separated job titles or keywords as alternatives.
 4. Search Gmail and/or at most 10 selected public companies/sources; each source completes independently and returns temporary rows without a run artifact.
 5. Normalize fields, preserve uncertainty/date provenance, and deduplicate within the current result set. Keep every current public-source match visible.
-6. Review current results together with previously saved applications. Keep possible matches grouped but unmerged.
+6. Review the current or explicitly loaded source records in Results. Keep possible matches grouped but unmerged.
 7. Persist only an explicit Save for later, application-status change, saved note, or confirmed official URL to `Job Hunt/Source/application_queue.json`.
-8. Optionally open one job's manual tool, verify an official candidate and separate eligibility score, document any real but previously unrecorded skill evidence, then generate reviewed application drafts only when requested.
+8. Review those persisted jobs in Applications using saved-for-later, preparing, applied/later, and closed lifecycle filters; update status and notes there as the application progresses.
+9. Optionally open one job's manual tool, verify an official candidate and separate eligibility score, document any real but previously unrecorded skill evidence, then generate reviewed application drafts only when requested.
+10. After submitting manually, explicitly archive a readable JD DOCX, clean JD Markdown, and structured application details beside the generated resume. Label the evidence full, partial, or summary-only; only after those Drive files succeed does the supported UI mark the job applied.
 
 ## Recommended architecture for the personal version
 
@@ -56,7 +58,7 @@ Private baseline DOCX --> contact-free evidence ---+--> verified DOCX draft
 Confirmed gap notes --> exact truthful keywords ---+
 ```
 
-- UI: React + TypeScript + Vite with a conditional multi-source Search screen, unified verification-first Results & Applications workspace, source evidence, useful saved views, and auto-persisted explicit status/note actions.
+- UI: React + TypeScript + Vite with a conditional multi-source Search screen, a current-search Results workspace, a persistent Applications workspace with lifecycle filters, source evidence, and auto-persisted explicit status/note actions.
 - Runtime: FastAPI on Python 3.12 serves both the API and compiled React application; validate locally and then deploy privately so daily use does not require the user's laptop.
 - Source architecture: keep business capabilities in `gmail`, `jobs`, `network`, `resumes`, `intelligence`, `runtime`, `discovery`, `integrations`, and `parsers`; do not restore flat feature modules or reverse domain dependencies.
 - Gmail: Gmail API with read-only access and a dedicated label/query.
@@ -72,6 +74,7 @@ Confirmed gap notes --> exact truthful keywords ---+
 - Network outreach: the offline tab lists every saved connection, ranks relevant technical reviewers from exported role text, and personalizes the approved resume-review request without an LLM. It may display the 111 exported emails only in this explicitly approved private screen; it never automates contact or sends those values to an LLM/log.
 - Job intelligence: an explicit per-row modal checks cached official-job research first, keeps alert-to-posting identity separate from resume eligibility, and never runs in the background.
 - Resume tailoring: a second explicit Luna action receives only contact-free professional evidence. The local editor preserves the private original, may conservatively reframe supported summary/work-bullet wording, and places supported exact JD terms under relevant Technical Skills headings. Confirmed notes are kept in the private Drive Resume Library; every fact and metric remains validated and every draft requires user review.
+- Applied-job evidence: post-generation confirmation creates `Job_Description.docx`, `Job_Description.md`, and `Application_Details.json` in the exact generated-resume Drive folder, stores capture quality, package links, and `applied_at` in the canonical queue, and does not submit or contact anyone. Exact ATS and bounded official-page capture precede any clearly labeled summary-only fallback.
 - Scheduling: none initially; GitHub Actions can be added after manual runs are stable.
 
 ## Core fields
@@ -132,7 +135,7 @@ No credentials should be provided in chat or committed to Git. Access setup begi
 
 ## Current recommendation
 
-Validate one real small-batch search for each checked source, confirm that no dated workbook appears, save one job, change its status/note, reload the site, and verify that only the saved job returns from the canonical application queue. No new API key or OAuth scope is required for the four enabled discovery ATS providers or the exact public Ashby posting lookup; OpenAI is required only for explicit per-job intelligence actions. Selected official URLs remain an identity boundary. React/FastAPI is the only supported runtime, with the retired Streamlit file retained under `legacy/` for short-term rollback/reference. Before private internet deployment, choose an access-control layer, HTTPS host, stable session secret, and persistent encrypted token/state/resume storage. Add scheduling only after several successful manual searches.
+Validate one real small-batch search for each checked source, confirm that no dated workbook appears, save one job, change its status/note, reload the site, and verify that only the saved job returns from the canonical application queue. No new API key or OAuth scope is required for the four enabled discovery ATS providers or the exact public Ashby posting lookup; OpenAI is required only for explicit per-job intelligence actions. Selected official URLs remain an identity boundary. React/FastAPI is the only supported runtime; the retired Streamlit rollback code has been removed. Before private internet deployment, choose an access-control layer, HTTPS host, stable session secret, and persistent encrypted token/state/resume storage. Add scheduling only after several successful manual searches.
 
 ## Documentation roles
 

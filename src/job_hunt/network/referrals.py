@@ -129,11 +129,23 @@ def load_registry_connection_records(
             raise ValueError("The LinkedIn Connections registry tab is unavailable.")
         sheet = workbook[CONNECTIONS_SHEET_NAME]
 
+        # Some Excel/Drive rewrites omit the worksheet ``dimension`` cache.  In
+        # openpyxl read-only mode that leaves max_row/max_column as None even
+        # though the sheet contains valid rows.  Calculate the bounds from the
+        # XML stream before using them; this is read-only and does not rewrite
+        # the authoritative registry workbook.
+        if sheet.max_row is None or sheet.max_column is None:
+            sheet.calculate_dimension(force=True)
+        max_row = int(sheet.max_row or 0)
+        max_column = int(sheet.max_column or 0)
+        if not max_row or not max_column:
+            raise ValueError("The LinkedIn Connections registry tab is empty.")
+
         header_row = 0
         header_indexes: dict[str, int] = {}
-        for row_number in range(1, min(sheet.max_row, 10) + 1):
+        for row_number in range(1, min(max_row, 10) + 1):
             values = [
-                sheet.cell(row_number, column).value for column in range(1, sheet.max_column + 1)
+                sheet.cell(row_number, column).value for column in range(1, max_column + 1)
             ]
             candidate = {
                 str(value).strip(): index for index, value in enumerate(values) if value is not None

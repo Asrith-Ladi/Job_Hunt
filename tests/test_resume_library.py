@@ -187,6 +187,35 @@ class DriveResumeLibraryTests(unittest.TestCase):
                     mime_type="application/test",
                 )
 
+    def test_application_support_file_reuses_the_verified_resume_folder(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            library = self._library(root)
+            description = root / "Job_Description.md"
+            description.write_text("# Verified job description\n", encoding="utf-8")
+
+            with patch(
+                "job_hunt.resumes.library.upload_or_update_file",
+                return_value={
+                    "id": "job-description-file",
+                    "webViewLink": "https://drive.example/job-description",
+                },
+            ) as upload:
+                result = library.upload_application_file(
+                    description,
+                    folder_id="application-folder-123",
+                    folder_url="https://drive.example/application-folder-123",
+                    folder_path="Job Hunt/Resumes/Sarvam AI/2026-08-25_Agent_Engineer",
+                    mime_type="text/markdown",
+                )
+
+            self.assertEqual(
+                upload.call_args.kwargs["parent_id"],
+                "application-folder-123",
+            )
+            self.assertEqual(result["file_id"], "job-description-file")
+            self.assertEqual(result["folder_id"], "application-folder-123")
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -16,6 +16,8 @@ The user approved both actions. They were implemented in this order:
 
 1. React/FastAPI became the only supported runtime. The final Streamlit file moved to
    `legacy/streamlit_app.py`; its dependency and active tests/run instructions were removed.
+   The executable rollback file was subsequently deleted during the approved production
+   cleanup in Discussion 041; this discussion remains the historical migration record.
 2. Each Gmail, Company Portal, and ATS result row gained an `Official JD + resume` button.
 3. Opening the panel is free. Official research and resume generation are separate explicit
    actions so a resume call never happens merely because a job was viewed.

@@ -119,7 +119,7 @@ export function flattenRuns(
   );
   const savedOnly = applications
     .filter((application) => !usedApplications.has(application.application_id))
-    .map((application, index) => ({
+    .map((application) => ({
       id: `saved:${application.application_id}`,
       source: application.source,
       runId: "application_queue",
@@ -151,6 +151,8 @@ function possibleMatchKey(item: QueueItem): string {
 
 function itemEvidenceScore(item: QueueItem): number {
   let score = item.source === "gmail" ? 0 : 10;
+  const matchScore = Number(item.row.match_score ?? 0);
+  if (Number.isFinite(matchScore)) score += matchScore;
   if (scalarText(item.row.official_url)) score += 20;
   if (scalarText(item.row.description)) score += 8;
   if (scalarText(item.row.posted_at ?? item.row.alert_posted_at)) score += 4;
@@ -192,7 +194,13 @@ export function groupQueueItems(items: QueueItem[]): QueueGroup[] {
         sourceLabels: sources,
       };
     })
-    .sort((left, right) => itemTimestamp(right.primary) - itemTimestamp(left.primary));
+    .sort((left, right) => {
+      const rightMatch = Number(right.primary.row.match_score ?? 0);
+      const leftMatch = Number(left.primary.row.match_score ?? 0);
+      const matchDifference = (Number.isFinite(rightMatch) ? rightMatch : 0)
+        - (Number.isFinite(leftMatch) ? leftMatch : 0);
+      return matchDifference || itemTimestamp(right.primary) - itemTimestamp(left.primary);
+    });
 }
 
 export function rowExperience(row: JobRow): string {
