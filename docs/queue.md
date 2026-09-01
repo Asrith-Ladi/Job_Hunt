@@ -62,7 +62,7 @@ Alternative terminal values: `deferred`, `rejected`, `cancelled`, or `superseded
 | Q-048 | in progress | 1 | Re-audit every company job link, color inaccessible rows red and manual/company-specific rows blue, and expand India-focused product, startup, and mid-sized coverage | `discussions/038_registry_link_audit_and_india_expansion.md` |
 | Q-049 | done | 1 | Refresh the React interface with a premium, clearer visual hierarchy and simpler copy while preserving the private job-search lifecycle | `discussions/039_premium_ui_refresh.md` |
 | Q-050 | done | 1 | Save a readable, completeness-labeled JD package after manual application and simplify Search to one primary action with advanced filters collapsed | `discussions/040_clean_jd_archives_and_simplified_actions.md` |
-| Q-051 | in_progress | 1 | Remove proven-unused production code/files, verify the accumulated release, open a descriptive PR, and merge it | `discussions/041_production_cleanup_and_release_pr.md` |
+| Q-051 | done | 1 | Remove proven-unused production code/files, verify the accumulated release, open a descriptive PR, and merge it | `discussions/041_production_cleanup_and_release_pr.md` |
 
 ## Adding an item
 
