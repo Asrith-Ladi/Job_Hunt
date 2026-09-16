@@ -192,6 +192,23 @@ function CompanySelector({
     if (selected.length < maximum) onChange([...selected, companyId]);
   };
 
+  const visibleCompanyIds = visible.map((item) => item.company_id);
+  const selectedVisibleCount = visibleCompanyIds.filter((companyId) => selected.includes(companyId)).length;
+  const remainingSelectionSlots = Math.max(0, maximum - selected.length);
+
+  const selectAllVisible = () => {
+    if (!remainingSelectionSlots) return;
+    const additions = visibleCompanyIds
+      .filter((companyId) => !selected.includes(companyId))
+      .slice(0, remainingSelectionSlots);
+    onChange([...selected, ...additions]);
+  };
+
+  const clearVisible = () => {
+    const visibleIds = new Set(visibleCompanyIds);
+    onChange(selected.filter((companyId) => !visibleIds.has(companyId)));
+  };
+
   return (
     <div className="registry-selector">
       <div className="registry-category-header">
@@ -232,7 +249,20 @@ function CompanySelector({
           <span aria-hidden="true">⌕</span>
           <input value={query} placeholder="Find a company or provider" onChange={(event) => setQuery(event.target.value)} />
         </label>
-        <span>{selected.length}/{maximum} selected</span>
+        <div className="registry-bulk-controls compact">
+          <span>{selected.length}/{maximum} selected</span>
+          <button
+            type="button"
+            onClick={selectAllVisible}
+            disabled={!visible.length || !remainingSelectionSlots || selectedVisibleCount === visible.length}
+            title={`Select every visible company that fits within the ${maximum}-company search limit`}
+          >
+            Select all shown
+          </button>
+          <button type="button" onClick={clearVisible} disabled={!selectedVisibleCount}>
+            Clear shown
+          </button>
+        </div>
       </div>
       <div className="registry-list premium-registry-list">
         {visible.map((item) => {

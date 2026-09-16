@@ -59,10 +59,14 @@ Alternative terminal values: `deferred`, `rejected`, `cancelled`, or `superseded
 | Q-045 | done | 1 | Separate temporary Results from a persistent Applications tab with saved, preparing, applied, and closed lifecycle views | `discussions/035_persistent_applications_tab.md` |
 | Q-046 | done | 1 | After manual application, save the verified JD and structured application snapshot beside the generated resume before marking the job applied | `discussions/036_applied_job_evidence_package.md` |
 | Q-047 | done | 1 | Batch Gmail alert-message downloads with live counts and recover Network Reviews from valid Drive/Excel workbooks without cached worksheet dimensions | `discussions/037_gmail_batching_and_network_recovery.md` |
-| Q-048 | in progress | 1 | Re-audit every company job link, color inaccessible rows red and manual/company-specific rows blue, and expand India-focused product, startup, and mid-sized coverage | `discussions/038_registry_link_audit_and_india_expansion.md` |
+| Q-048 | done | 1 | Re-audit every company job link, color inaccessible rows red and manual/company-specific rows blue, and expand India-focused product, startup, and mid-sized coverage | `discussions/038_registry_link_audit_and_india_expansion.md` |
 | Q-049 | done | 1 | Refresh the React interface with a premium, clearer visual hierarchy and simpler copy while preserving the private job-search lifecycle | `discussions/039_premium_ui_refresh.md` |
 | Q-050 | done | 1 | Save a readable, completeness-labeled JD package after manual application and simplify Search to one primary action with advanced filters collapsed | `discussions/040_clean_jd_archives_and_simplified_actions.md` |
 | Q-051 | done | 1 | Remove proven-unused production code/files, verify the accumulated release, open a descriptive PR, and merge it | `discussions/041_production_cleanup_and_release_pr.md` |
+| Q-052 | done | 1 | Curate useful employers from the private LinkedIn export, add verified India-relevant career URLs, and refresh LinkedIn-to-registry aliases without importing noisy company strings | `discussions/038_registry_link_audit_and_india_expansion.md` |
+| Q-053 | done | 1 | Add an alphabetized, filterable Company Directory worksheet with clickable company, careers-page, and direct-portal links | `discussions/042_company_search_directory.md` |
+| Q-054 | done | 1 | Add Companies as the fifth React navigation tab with five registry-category views, official links, Drive refresh, and Company Portal search selection | `discussions/043_company_registry_ui_tab.md` |
+| Q-055 | done | 1 | Add bulk select and clear controls to each visible company-registry area while preserving the ten-source search limit | `discussions/043_company_registry_ui_tab.md` |
 
 ## Adding an item
 

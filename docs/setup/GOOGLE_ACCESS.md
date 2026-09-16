@@ -128,7 +128,9 @@ Do not expose the local FastAPI process directly to the public internet. A priva
 - persistent encrypted storage for the Google token and application state;
 - a backup and token-revocation procedure.
 
-Those are deployment decisions after the real local Gmail parity run, not part of the current migration.
+The private single-user deployment direction is now recorded in
+[`GCP_CLOUD_RUN_DEPLOYMENT.md`](GCP_CLOUD_RUN_DEPLOYMENT.md). Follow that runbook only after
+its deployment-code gate is complete; do not expose the current local server directly.
 
 Official references:
 

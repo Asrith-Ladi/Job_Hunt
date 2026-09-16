@@ -457,3 +457,14 @@ This log records mistakes, project incidents, durable fixes, and prevention rule
 - Fix: Normalize only supported description structures; retry an exact public ATS record and then a bounded official-page JSON-LD/embedded/static capture; classify evidence as full, partial, or summary-only; save a readable `Job_Description.docx` plus clean Markdown; retain eligibility and lifecycle metadata in `Application_Details.json`.
 - Prevention: Every applied-job package test must assert the capture classification, readable DOCX, clean Markdown, and protected-host boundary. A summary must always carry an explicit review warning and `full_description_available=false`.
 - Evidence/related task: `src/job_hunt/integrations/official_descriptions.py`, `src/job_hunt/intelligence/service.py`, `src/job_hunt/resumes/outputs.py`, `tests/test_official_descriptions.py`; Discussion 040.
+
+### I-041 - Infosys job cards existed only in a large JavaScript-fed catalog
+
+- Date: 2026-09-15
+- Status: resolved locally; deployment verification pending
+- Area: company portal discovery / company-specific public data
+- Symptom: Infosys visibly listed a Hyderabad `Senior Machine Learning Engineer` role matching the default keywords and 5–8-year target, but Company Portals returned no jobs.
+- Cause: `career.infosys.com` serves an Angular shell with no jobs in its initial HTML. The browser later loads an approximately 5.5 MB public JSON catalog, while the generic adapter stopped after HTML, JSON-LD, embedded documented ATS detection, and sitemap checks. The standard 5 MiB response boundary was also slightly below the current catalog size.
+- Fix: Add a bounded Infosys company-specific adapter that discovers the current endpoint from the official runtime configuration, restricts requests to the approved Infosys host/path, permits an 8 MiB/60-second ceiling for only that request, normalizes exact employer job URLs and fields, and then uses the shared deterministic filters.
+- Prevention: When a verified role is absent from static HTML, inspect only the public page-owned data flow; model undocumented employer JSON as a company-specific adapter with strict hosts, paths, size/time limits, regression fixtures, and manual fallback rather than loosening global network limits or adding title exceptions.
+- Evidence/related task: `src/job_hunt/discovery/company_specific.py`, `src/job_hunt/discovery/generic.py`, `src/job_hunt/discovery/http_client.py`, `tests/test_discovery_sources.py`; Discussion 038.

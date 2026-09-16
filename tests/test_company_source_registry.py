@@ -6,6 +6,9 @@ from openpyxl import load_workbook
 
 from scripts.build_company_source_registry import (
     CATEGORY_REGISTRIES,
+    COMPANY_DIRECTORY_HEADERS,
+    COMPANY_DIRECTORY_SHEET_NAME,
+    COMPANY_DIRECTORY_TABLE_NAME,
     PORTAL_ALERT_HEADERS,
     PORTAL_ALERT_SHEET_NAME,
     PORTAL_ALERT_TABLE_NAME,
@@ -26,7 +29,16 @@ class CompanySourceRegistryTests(unittest.TestCase):
             workbook = load_workbook(output, data_only=False)
             self.assertEqual(
                 workbook.sheetnames,
-                ["Coverage", *CATEGORY_REGISTRIES, PORTAL_ALERT_SHEET_NAME],
+                [
+                    "Coverage",
+                    COMPANY_DIRECTORY_SHEET_NAME,
+                    *CATEGORY_REGISTRIES,
+                    PORTAL_ALERT_SHEET_NAME,
+                ],
+            )
+            self.assertEqual(
+                workbook.active.title,
+                COMPANY_DIRECTORY_SHEET_NAME,
             )
 
             seen: set[str] = set()
@@ -62,7 +74,30 @@ class CompanySourceRegistryTests(unittest.TestCase):
                     self.assertIsNotNone(sheet.cell(row, 4).hyperlink)
                     self.assertIsNotNone(sheet.cell(row, 5).hyperlink)
 
-            self.assertEqual(len(seen), 246)
+            self.assertEqual(len(seen), 279)
+            directory = workbook[COMPANY_DIRECTORY_SHEET_NAME]
+            self.assertEqual(directory.max_row, 283)
+            self.assertEqual(directory.max_column, len(COMPANY_DIRECTORY_HEADERS))
+            self.assertEqual(directory.freeze_panes, "A5")
+            self.assertIsNone(directory.auto_filter.ref)
+            self.assertIn(COMPANY_DIRECTORY_TABLE_NAME, directory.tables)
+            self.assertEqual(
+                [directory.cell(4, column).value for column in range(1, 11)],
+                COMPANY_DIRECTORY_HEADERS,
+            )
+            directory_names = [
+                str(directory.cell(row, 1).value)
+                for row in range(5, directory.max_row + 1)
+            ]
+            self.assertEqual(directory_names, sorted(directory_names, key=str.casefold))
+            self.assertEqual(
+                {name.casefold() for name in directory_names},
+                seen,
+            )
+            for row in range(5, directory.max_row + 1):
+                self.assertIsNotNone(directory.cell(row, 1).hyperlink)
+                self.assertIsNotNone(directory.cell(row, 5).hyperlink)
+                self.assertIsNotNone(directory.cell(row, 6).hyperlink)
             coverage = workbook["Coverage"]
             self.assertEqual(coverage.freeze_panes, "A6")
             self.assertEqual(coverage.auto_filter.ref, "A5:G10")
@@ -90,10 +125,10 @@ class CompanySourceRegistryTests(unittest.TestCase):
 
     def test_expected_category_sizes_and_representative_adapters(self):
         expected_counts = {
-            "MNC": 65,
-            "Product Companies": 87,
+            "MNC": 89,
+            "Product Companies": 91,
             "Startups": 37,
-            "Mid-Sized Companies": 37,
+            "Mid-Sized Companies": 42,
             "Other Companies": 20,
         }
         self.assertEqual(
@@ -132,6 +167,11 @@ class CompanySourceRegistryTests(unittest.TestCase):
         )
         self.assertIn("Cohesity", rows["Mid-Sized Companies"])
         self.assertIn("Fractal Analytics", rows["Other Companies"])
+        self.assertIn("Verizon", rows["MNC"])
+        self.assertEqual(rows["MNC"]["Sutherland"].source_type, "SmartRecruiters")
+        self.assertEqual(rows["Product Companies"]["Splunk"].source_type, "Cisco company-specific")
+        self.assertIn("jobs.myntra.com", rows["Product Companies"]["Myntra"].jobs_url)
+        self.assertEqual(rows["Mid-Sized Companies"]["ValueLabs"].source_type, "SmartRecruiters")
 
     def test_all_rows_use_https_and_have_one_primary_category(self):
         assignments: dict[str, str] = {}
@@ -142,7 +182,7 @@ class CompanySourceRegistryTests(unittest.TestCase):
                 assignments[key] = category
                 self.assertTrue(company.careers_url.startswith("https://"))
                 self.assertTrue(company.jobs_url.startswith("https://"))
-        self.assertEqual(len(assignments), 246)
+        self.assertEqual(len(assignments), 279)
 
 
 if __name__ == "__main__":

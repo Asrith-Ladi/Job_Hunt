@@ -13,6 +13,7 @@ from urllib.parse import urljoin, urlsplit
 from xml.etree import ElementTree
 
 from job_hunt.discovery.adapters import adapter_for, build_lever_job, html_to_text
+from job_hunt.discovery.company_specific import discover_company_structured_source
 from job_hunt.discovery.detection import detect_embedded_sources
 from job_hunt.discovery.http_client import (
     AccessStoppedError,
@@ -391,6 +392,29 @@ class GenericPublicDiscovery:
             raise PublicSourceError("The public careers HTML could not be parsed safely.") from exc
 
         embedded_warnings: list[str] = []
+        try:
+            company_outcome = discover_company_structured_source(
+                self.http,
+                source,
+                filters,
+                page_url=response.url,
+                discovered_at=discovered_at,
+            )
+        except PublicSourceError as exc:
+            embedded_warnings.append(
+                f"Company-specific public data was unavailable: {clean_text(exc)}"
+            )
+        else:
+            if company_outcome is not None:
+                return GenericDiscoveryOutcome(
+                    jobs=company_outcome.jobs,
+                    strategy=company_outcome.strategy,
+                    warning=company_outcome.warning,
+                    source_url=company_outcome.source_url,
+                    detected_provider=company_outcome.provider,
+                    detected_identifier=company_outcome.identifier,
+                )
+
         empty_embedded_outcome: GenericDiscoveryOutcome | None = None
         for detected in detect_embedded_sources(response.text):
             detected_source = replace(

@@ -4,6 +4,18 @@
 - Status: discussion — local full workflow is complete; deployment is not approved
 - Related queue item: Q-007
 
+## 2026-09-01 deployment direction
+
+The active application is now React/FastAPI; Streamlit has been removed. The selected personal
+hosting direction is a private, single-user Cloud Run service in Mumbai, protected by IAP, with
+static secrets in Secret Manager, a private persistent runtime mount, and Drive remaining the
+user-artifact source of truth. The step-by-step preparation, deployment, security, acceptance,
+rollback, and troubleshooting reference is
+[`../setup/GCP_CLOUD_RUN_DEPLOYMENT.md`](../setup/GCP_CLOUD_RUN_DEPLOYMENT.md).
+
+The sections below preserve the original reasoning history. Where they mention a Streamlit UI,
+read that as historical context rather than an active runtime recommendation.
+
 ## Immediate outcome
 
 Discussion 008 supersedes the earlier local-runtime limitation: the current Streamlit action

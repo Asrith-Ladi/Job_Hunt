@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { api } from "./api";
+import CompanyRegistryTab from "./CompanyRegistryTab";
 import JobIntelligencePanel from "./JobIntelligencePanel";
 import JobQueueTab from "./JobQueueTab";
 import NetworkReviewsTab from "./NetworkReviewsTab";
@@ -27,7 +28,7 @@ import {
   type WorkspaceSource,
 } from "./workspace";
 
-type ProductTab = "run_setup" | "job_queue" | "applications" | "network_reviews";
+type ProductTab = "run_setup" | "job_queue" | "applications" | "network_reviews" | "company_registry";
 type Notice = { kind: "success" | "error" | "info"; text: string };
 
 const TAB_META: Record<ProductTab, { eyebrow: string; title: string }> = {
@@ -35,11 +36,15 @@ const TAB_META: Record<ProductTab, { eyebrow: string; title: string }> = {
   job_queue: { eyebrow: "Fresh matches", title: "Results" },
   applications: { eyebrow: "Your job pipeline", title: "Applications" },
   network_reviews: { eyebrow: "People who can help", title: "Network" },
+  company_registry: { eyebrow: "Official employer sources", title: "Companies" },
 };
 
 function tabFromLocation(): ProductTab {
   const requested = new URLSearchParams(window.location.search).get("tab");
-  return requested === "job_queue" || requested === "applications" || requested === "network_reviews"
+  return requested === "job_queue"
+    || requested === "applications"
+    || requested === "network_reviews"
+    || requested === "company_registry"
     ? requested
     : "run_setup";
 }
@@ -292,6 +297,16 @@ function App() {
     } finally {
       setRefreshingRegistry(false);
     }
+  };
+
+  const useSelectedCompanies = () => {
+    setSetup((current) => ({
+      ...current,
+      enabledSources: current.enabledSources.includes("company_portals")
+        ? current.enabledSources
+        : [...current.enabledSources, "company_portals"],
+    }));
+    navigateTo("run_setup");
   };
 
   const validateSetup = (): string => {
@@ -608,6 +623,9 @@ function App() {
           <button className={activeTab === "network_reviews" ? "active" : ""} type="button" onClick={() => navigateTo("network_reviews")}>
             <span className="nav-index">04</span><span><strong>Network</strong><small>Find relevant connections</small></span>
           </button>
+          <button className={activeTab === "company_registry" ? "active" : ""} type="button" onClick={() => navigateTo("company_registry")}>
+            <span className="nav-index">05</span><span><strong>Companies</strong><small>{registry.length ? `${registry.length} official sources` : "Browse official sources"}</small></span>
+          </button>
         </nav>
 
         <div className="sidebar-run-status">
@@ -700,8 +718,19 @@ function App() {
             onGoToSetup={() => navigateTo("run_setup")}
             onNotice={(text) => setNotice({ kind: "success", text })}
           />
-        ) : (
+        ) : activeTab === "network_reviews" ? (
           <NetworkReviewsTab onNotice={setNotice} />
+        ) : (
+          <CompanyRegistryTab
+            registry={registry}
+            registryStatus={registryStatus}
+            refreshingRegistry={refreshingRegistry}
+            selectedCompanyIds={setup.companyIds}
+            maximumSelected={config.discovery_max_sources_per_run}
+            onSelectionChange={(companyIds) => setSetup((current) => ({ ...current, companyIds }))}
+            onRefreshRegistry={refreshRegistry}
+            onUseSelected={useSelectedCompanies}
+          />
         )}
       </section>
 

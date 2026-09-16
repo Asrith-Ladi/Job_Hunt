@@ -10,7 +10,12 @@ from scripts.build_company_source_registry import (
     build_workbook,
     verify_workbook,
 )
-from scripts.linkedin_export_workbook import RegistryEntry, load_linkedin_export
+from scripts.linkedin_export_workbook import (
+    RegistryEntry,
+    _build_registry_index,
+    _match_registry,
+    load_linkedin_export,
+)
 
 
 def _write_csv(path: Path, headers: list[str], rows: list[list[str]]) -> None:
@@ -22,6 +27,33 @@ def _write_csv(path: Path, headers: list[str], rows: list[list[str]]) -> None:
 
 
 class LinkedInExportWorkbookTests(unittest.TestCase):
+    def test_employer_aliases_reuse_existing_registry_rows(self):
+        entries = [
+            RegistryEntry(
+                category=category,
+                company=company.company,
+                careers_url=company.careers_url,
+                jobs_url=company.jobs_url,
+            )
+            for category, companies in CATEGORY_REGISTRIES.items()
+            for company in companies
+        ]
+        registry_index, _ = _build_registry_index(entries)
+
+        expected_matches = {
+            "Amazon Web Services (AWS)": "Amazon",
+            "Deloitte India (Offices of the US)": "Deloitte",
+            "Fractal": "Fractal Analytics",
+            "LTM": "LTIMindtree",
+            "Micron": "Micron Technology",
+            "Sarvam": "Sarvam AI",
+            "Warner Bros Discovery": "Warner Bros. Discovery",
+        }
+        for raw_company, expected_company in expected_matches.items():
+            match, _ = _match_registry(raw_company, registry_index)
+            self.assertIsNotNone(match, raw_company)
+            self.assertEqual(match.company, expected_company)
+
     def _create_export(self, root: Path) -> None:
         connections = root / "Connections.csv"
         connections.write_text(
@@ -204,7 +236,7 @@ class LinkedInExportWorkbookTests(unittest.TestCase):
             verify_workbook(output, linkedin_data=data)
 
             workbook = load_workbook(output, data_only=False)
-            self.assertEqual(len(workbook.sheetnames), 14)
+            self.assertEqual(len(workbook.sheetnames), 15)
             pilot = workbook["Portal Alert Pilot"]
             referral_counts = {
                 pilot.cell(row, 1).value: pilot.cell(row, 3).value

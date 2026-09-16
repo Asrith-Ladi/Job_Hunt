@@ -14,6 +14,8 @@ import httpx
 
 USER_AGENT = "PersonalJobHunt/0.3 (+manual public job discovery)"
 DEFAULT_MAX_RESPONSE_BYTES = 5 * 1024 * 1024
+ABSOLUTE_MAX_RESPONSE_BYTES = 12 * 1024 * 1024
+ABSOLUTE_MAX_TIMEOUT_SECONDS = 60.0
 REDIRECT_STATUSES = {301, 302, 303, 307, 308}
 
 
@@ -146,7 +148,21 @@ class SafeHttpClient:
         *,
         allowed_hosts: Iterable[str] | None = None,
         accept: str = "application/json, application/xml, text/xml, text/html;q=0.8",
+        max_response_bytes: int | None = None,
+        timeout_seconds: float | None = None,
     ) -> PublicResponse:
+        response_limit = (
+            self.max_response_bytes
+            if max_response_bytes is None
+            else int(max_response_bytes)
+        )
+        if not 1 <= response_limit <= ABSOLUTE_MAX_RESPONSE_BYTES:
+            raise PublicSourceError("The requested public response limit is not allowed.")
+        request_timeout = None if timeout_seconds is None else float(timeout_seconds)
+        if request_timeout is not None and not 0 < request_timeout <= ABSOLUTE_MAX_TIMEOUT_SECONDS:
+            raise PublicSourceError("The requested public source timeout is not allowed.")
+        request_options = {"timeout": request_timeout} if request_timeout is not None else {}
+
         current = str(url)
         for redirect_count in range(self.max_redirects + 1):
             current = validate_public_https_url(
@@ -159,6 +175,7 @@ class SafeHttpClient:
                     "GET",
                     current,
                     headers={"User-Agent": USER_AGENT, "Accept": accept},
+                    **request_options,
                 ) as response:
                     if response.status_code in REDIRECT_STATUSES:
                         location = response.headers.get("location")
@@ -190,7 +207,7 @@ class SafeHttpClient:
                             raise PublicSourceError(
                                 "The public source returned an invalid response size."
                             ) from exc
-                        if declared_size > self.max_response_bytes:
+                        if declared_size > response_limit:
                             raise PublicSourceError(
                                 "The public source response is larger than the safe limit."
                             )
@@ -198,7 +215,7 @@ class SafeHttpClient:
                     total = 0
                     for chunk in response.iter_bytes():
                         total += len(chunk)
-                        if total > self.max_response_bytes:
+                        if total > response_limit:
                             raise PublicSourceError(
                                 "The public source response exceeded the safe size limit."
                             )

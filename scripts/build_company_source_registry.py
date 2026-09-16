@@ -116,9 +116,13 @@ COMPANIES = [
         "Infosys",
         "IT services & consulting",
         "https://www.infosys.com/careers/",
-        "https://career.infosys.com/joblist",
+        "https://career.infosys.com/jobs?companyhiringtype=IL&countrycode=IN",
         "Company-specific",
         india_jobs="Yes",
+        notes=(
+            "The public India portal loads jobs from an undocumented Infosys JSON endpoint; "
+            "use the company-specific adapter and retain manual fallback."
+        ),
     ),
     source(
         "Wipro",
@@ -2081,6 +2085,277 @@ INDIA_MID_SIZED_EXPANSION = [
 ]
 
 
+LINKEDIN_MNC_EXPANSION = [
+    simple_source(
+        "Verizon",
+        "Telecommunications & digital services",
+        "https://mycareer.verizon.com/locations/india/",
+        "https://mycareer.verizon.com/jobs/",
+        "Company-hosted jobs portal",
+        notes="LinkedIn-export employer with an official India careers location.",
+    ),
+    simple_source(
+        "Evernorth Health Services",
+        "Healthcare technology & services",
+        "https://jobs.thecignagroup.com/us/en/evernorth-india",
+        "https://jobs.thecignagroup.com/us/en/evernorth-india-jobs",
+        "Phenom",
+        source_identifier="The Cigna Group | Evernorth India",
+    ),
+    simple_source(
+        "Optum",
+        "Healthcare technology & services",
+        "https://www.optum.in/about/careers.html",
+        "https://careers.unitedhealthgroup.com/business/custom_fields.uhgoptumsubbrands/optumindia/34088/5",
+        "Company-specific",
+        source_identifier="UnitedHealth Group | Optum India",
+    ),
+    simple_source(
+        "Hexaware Technologies",
+        "IT services & digital engineering",
+        "https://hexaware.com/careers/",
+        "https://jobs.hexaware.com/",
+        "Company-hosted jobs portal",
+    ),
+    simple_source(
+        "S&P Global",
+        "Financial information & analytics",
+        "https://www.spglobal.com/en/explore-s-p-global/careers",
+        "https://careers.spglobal.com/jobs",
+        "Company-hosted jobs portal",
+    ),
+    simple_source(
+        "Bristol Myers Squibb",
+        "Biopharmaceuticals",
+        "https://careers.bms.com/in/",
+        "https://jobs.bms.com/careers?location=india",
+        "Company-hosted jobs portal",
+        source_identifier="BMS India",
+    ),
+    simple_source(
+        "Carelon Global Solutions",
+        "Healthcare technology & operations",
+        "https://www.carelonglobal.in/careers",
+        "https://elevancehealth.wd1.myworkdayjobs.com/en-US/carelonglobal_in",
+        "Workday",
+        source_identifier="elevancehealth | wd1 | carelonglobal_in",
+    ),
+    simple_source(
+        "GlobalLogic",
+        "Digital product engineering",
+        "https://www.globallogic.com/careers/",
+        "https://www.globallogic.com/in/career-search-page/",
+        "Company-hosted jobs portal",
+    ),
+    simple_source(
+        "ZF Group",
+        "Automotive & mobility technology",
+        "https://www.zf.com/india/en/careers/careers.html",
+        "https://jobs.zf.com/viewalljobs/",
+        "SAP SuccessFactors",
+        source_identifier="jobs.zf.com",
+    ),
+    simple_source(
+        "Centific",
+        "AI data & digital services",
+        "https://www.centific.com/company/careers",
+        "https://centific.wd1.myworkdayjobs.com/Centific_Global",
+        "Workday",
+        source_identifier="centific | wd1 | Centific_Global",
+    ),
+    simple_source(
+        "Chubb",
+        "Insurance & technology",
+        "https://careers.chubb.com/global/en",
+        "https://fa-ewgu-saasfaprod1.fa.ocs.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_2001",
+        "Oracle Recruiting Cloud",
+        source_identifier="CX_2001",
+        notes="Chubb insurance careers; do not confuse this row with Chubb Fire & Security.",
+    ),
+    simple_source(
+        "Straive",
+        "Data, AI & content technology services",
+        "https://www.straive.com/careers/",
+        "https://www.straive.com/careers/job-postings/",
+        "Company-hosted jobs portal",
+    ),
+    simple_source(
+        "UBS",
+        "Banking & financial technology",
+        "https://www.ubs.com/global/en/careers/about-us/locations/india.html",
+        "https://jobs.ubs.com/TGnewUI/Search/Home/Home",
+        "Company-specific",
+        source_identifier="UBS Talent Gateway",
+    ),
+    simple_source(
+        "ICICI Bank",
+        "Banking & financial services",
+        "https://careers.icici.bank.in/",
+        "https://careers.icici.bank.in/CareerApplicant/Career/Home/",
+        "Company-hosted jobs portal",
+    ),
+    simple_source(
+        "Lloyds Technology Centre India",
+        "Banking technology",
+        "https://www.lloydstechnologycentre.com/",
+        "https://lbg.wd3.myworkdayjobs.com/en-US/Lloyds_Technology_Centre",
+        "Workday",
+        source_identifier="lbg | wd3 | Lloyds_Technology_Centre",
+    ),
+    simple_source(
+        "Sutherland",
+        "Digital transformation & business services",
+        "https://www.jobs.sutherlandglobal.com/",
+        "https://careers.smartrecruiters.com/sutherland1",
+        "SmartRecruiters",
+        source_identifier="sutherland1",
+        public_endpoint="https://api.smartrecruiters.com/v1/companies/sutherland1/postings",
+        api_key_required="No",
+    ),
+    simple_source(
+        "ADP",
+        "Human capital management technology",
+        "https://jobs.adp.com/en/",
+        "https://jobs.adp.com/en/locations/apac/india/",
+        "Company-hosted jobs portal",
+    ),
+    simple_source(
+        "Amgen",
+        "Biotechnology",
+        "https://careers.amgen.com/",
+        "https://careers.amgen.com/en/location/india-jobs/87/1269750/2/343355890",
+        "Phenom",
+        source_identifier="Amgen India",
+    ),
+    simple_source(
+        "Novartis",
+        "Pharmaceuticals & healthcare technology",
+        "https://www.novartis.com/in-en/careers/career-search",
+        "https://novartis.wd3.myworkdayjobs.com/en-US/Novartis_Careers",
+        "Workday",
+        source_identifier="novartis | wd3 | Novartis_Careers",
+    ),
+    simple_source(
+        "Warner Bros. Discovery",
+        "Media & streaming technology",
+        "https://careers.wbd.com/global/en/hyderabad",
+        "https://careers.wbd.com/global/en/search-results",
+        "Company-hosted jobs portal",
+        source_identifier="WBD Hyderabad",
+    ),
+    simple_source(
+        "Concentrix",
+        "Customer experience technology & services",
+        "https://jobs.concentrix.com/",
+        "https://jobs.concentrix.com/job-search/?country=India",
+        "Company-hosted jobs portal",
+    ),
+    simple_source(
+        "The Hartford India",
+        "Insurance technology",
+        "https://www.thehartford.com/careers",
+        "https://www.jointhehartford.com/jobs/in/",
+        "Company-specific",
+        source_identifier="The Hartford India",
+    ),
+    simple_source(
+        "Zensar Technologies",
+        "IT services & digital engineering",
+        "https://www.zensar.com/careers",
+        "https://www.zensar.com/careers",
+        "Company-hosted jobs portal",
+    ),
+    simple_source(
+        "YASH Technologies",
+        "IT services & digital transformation",
+        "https://www.yash.com/career/",
+        "https://careers.yash.com/viewalljobs/",
+        "SAP SuccessFactors",
+        source_identifier="careers.yash.com",
+    ),
+]
+
+
+LINKEDIN_PRODUCT_EXPANSION = [
+    simple_source(
+        "Splunk",
+        "Observability, security & data platform",
+        "https://careers.cisco.com/global/en/splunk",
+        "https://careers.cisco.com/global/en/splunk/india",
+        "Cisco company-specific",
+        source_identifier="Cisco | Splunk India",
+        notes="Cisco-owned employer retained as a distinct search brand because the LinkedIn export contains Splunk employment history.",
+    ),
+    simple_source(
+        "Myntra",
+        "Fashion e-commerce technology",
+        "https://life.myntra.com/",
+        "https://jobs.myntra.com/home",
+        "Company-hosted jobs portal",
+        notes="Myntra identifies jobs.myntra.com as its official jobs portal.",
+    ),
+    simple_source(
+        "National Payments Corporation of India (NPCI)",
+        "Payments infrastructure",
+        "https://www.npci.org.in/careers",
+        "https://careers.npci.org.in/jobs/Careers",
+        "Zoho Recruit",
+        source_identifier="careers.npci.org.in",
+    ),
+    simple_source(
+        "Phenom",
+        "Talent experience software",
+        "https://careers.phenom.com/",
+        "https://careers.phenom.com/in/en/jobs-in-india",
+        "Company-hosted jobs portal",
+        source_identifier="Phenom India",
+    ),
+]
+
+
+LINKEDIN_MID_SIZED_EXPANSION = [
+    simple_source(
+        "ValueLabs",
+        "Digital product engineering",
+        "https://www.valuelabs.com/careers/",
+        "https://careers.smartrecruiters.com/ValueLabs",
+        "SmartRecruiters",
+        source_identifier="ValueLabs",
+        public_endpoint="https://api.smartrecruiters.com/v1/companies/ValueLabs/postings",
+        api_key_required="No",
+    ),
+    simple_source(
+        "Innominds",
+        "Digital product engineering",
+        "https://www.innominds.com/careers",
+        "https://innominds.hire.trakstar.com/",
+        "Trakstar Hire",
+        source_identifier="innominds",
+    ),
+    simple_source(
+        "Grid Dynamics",
+        "Digital engineering & AI consulting",
+        "https://www.griddynamics.com/careers",
+        "https://www.griddynamics.com/careers/discover-openings",
+        "Company-hosted jobs portal",
+    ),
+    simple_source(
+        "Impetus",
+        "Data engineering & cloud services",
+        "https://www.impetus.com/careers/",
+        "https://www.impetus.com/careers/",
+        "Company-hosted jobs portal",
+    ),
+    simple_source(
+        "Tezo",
+        "Digital product engineering",
+        "https://www.tezo.com/careers",
+        "https://www.tezo.com/careers",
+        "Company-hosted jobs portal",
+    ),
+]
+
+
 _ALL_EXISTING_BY_NAME = {
     company.company: company for company in COMPANIES + PRODUCT_COMPANIES
 }
@@ -2103,18 +2378,18 @@ _PRODUCT_NAMES = {company.company for company in PRODUCT_COMPANIES}
 
 MNC_COMPANIES = [
     company for company in COMPANIES if company.company not in _PRODUCT_NAMES
-] + NEW_MNC_COMPANIES
+] + NEW_MNC_COMPANIES + LINKEDIN_MNC_EXPANSION
 ESTABLISHED_PRODUCT_COMPANIES = [
     company
     for company in PRODUCT_COMPANIES
     if company.company not in _STARTUP_FROM_PRODUCT | _MID_SIZED_FROM_PRODUCT
-] + NEW_PRODUCT_COMPANIES + INDIA_PRODUCT_EXPANSION
+] + NEW_PRODUCT_COMPANIES + INDIA_PRODUCT_EXPANSION + LINKEDIN_PRODUCT_EXPANSION
 STARTUP_COMPANIES = [
     _ALL_EXISTING_BY_NAME[name] for name in sorted(_STARTUP_FROM_PRODUCT)
 ] + NEW_STARTUP_COMPANIES + INDIA_STARTUP_EXPANSION
 MID_SIZED_COMPANIES = [
     _ALL_EXISTING_BY_NAME[name] for name in sorted(_MID_SIZED_FROM_PRODUCT)
-] + NEW_MID_SIZED_COMPANIES + INDIA_MID_SIZED_EXPANSION
+] + NEW_MID_SIZED_COMPANIES + INDIA_MID_SIZED_EXPANSION + LINKEDIN_MID_SIZED_EXPANSION
 
 CATEGORY_REGISTRIES = {
     "MNC": MNC_COMPANIES,
@@ -2655,6 +2930,21 @@ REGISTRY_HEADERS = [
     "Notes",
 ]
 
+COMPANY_DIRECTORY_SHEET_NAME = "Company Directory"
+COMPANY_DIRECTORY_TABLE_NAME = "CompanyDirectory"
+COMPANY_DIRECTORY_HEADERS = [
+    "Company",
+    "Category",
+    "Sector",
+    "Priority",
+    "Official Careers Page",
+    "Direct Job Portal",
+    "ATS / Source Type",
+    "India Jobs",
+    "Verification Status",
+    "Last Checked",
+]
+
 TABLE_NAMES = {
     "MNC": "MNCRegistry",
     "Product Companies": "ProductRegistry",
@@ -2736,7 +3026,7 @@ PORTAL_ALERT_PILOT = [
     {
         "company": "Infosys",
         "category": "MNC",
-        "jobs_url": "https://career.infosys.com/joblist",
+        "jobs_url": "https://career.infosys.com/jobs?companyhiringtype=IL&countrycode=IN",
         "alert_supported": "Not confirmed for India",
         "alert_method": "Interactive job portal; Gmail/app scanner fallback",
         "login_required": "Not confirmed",
@@ -3175,6 +3465,198 @@ def _add_registry_sheet(
     sheet.oddFooter.right.text = "Page &P of &N"
 
 
+def _populate_company_directory_sheet(
+    workbook: Workbook,
+    *,
+    validation_results: dict[str, tuple[str, str]] | None,
+) -> None:
+    """Add a compact searchable index without replacing detailed registry tabs."""
+
+    sheet = workbook[COMPANY_DIRECTORY_SHEET_NAME]
+    sheet.sheet_view.showGridLines = False
+    sheet.sheet_view.zoomScale = 85
+    column_count = len(COMPANY_DIRECTORY_HEADERS)
+
+    sheet.merge_cells(
+        start_row=1,
+        start_column=1,
+        end_row=1,
+        end_column=column_count,
+    )
+    title = sheet.cell(1, 1, "Company Search Directory")
+    title.font = Font(name="Aptos Display", size=18, bold=True, color="FFFFFF")
+    title.fill = PatternFill("solid", fgColor="0F766E")
+    title.alignment = Alignment(vertical="center")
+    sheet.row_dimensions[1].height = 32
+
+    sheet.merge_cells(
+        start_row=2,
+        start_column=1,
+        end_row=2,
+        end_column=column_count,
+    )
+    note = sheet.cell(
+        2,
+        1,
+        (
+            "Search with Ctrl+F or use the table filters. Click a company name to jump "
+            "to its detailed registry row; click either URL to open the official careers "
+            "or job-search page."
+        ),
+    )
+    note.font = Font(name="Aptos", size=10, italic=True, color="334155")
+    note.fill = PatternFill("solid", fgColor="E2E8F0")
+    note.alignment = Alignment(wrap_text=True, vertical="center")
+    sheet.row_dimensions[2].height = 38
+
+    sheet.merge_cells(
+        start_row=3,
+        start_column=1,
+        end_row=3,
+        end_column=column_count,
+    )
+    summary = sheet.cell(
+        3,
+        1,
+        (
+            "Convenience index only: edit company details in the matching category tab, "
+            "which remains the application source of truth."
+        ),
+    )
+    summary.font = Font(name="Aptos", size=10, color="115E59")
+    summary.fill = PatternFill("solid", fgColor="CCFBF1")
+    summary.alignment = Alignment(wrap_text=True, vertical="center")
+    sheet.row_dimensions[3].height = 26
+
+    for column, header in enumerate(COMPANY_DIRECTORY_HEADERS, start=1):
+        cell = sheet.cell(4, column, header)
+        cell.font = Font(name="Aptos", size=10, bold=True, color="FFFFFF")
+        cell.fill = PatternFill("solid", fgColor="1E3A5F")
+        cell.alignment = Alignment(wrap_text=True, vertical="center")
+    sheet.row_dimensions[4].height = 36
+
+    directory_rows: list[tuple[str, int, CompanySource]] = []
+    for category, companies in CATEGORY_REGISTRIES.items():
+        directory_rows.extend(
+            (category, source_row, company)
+            for source_row, company in enumerate(companies, start=5)
+        )
+    directory_rows.sort(key=lambda item: item[2].company.casefold())
+
+    checked_on = date.today()
+    for row_index, (category, source_row, company) in enumerate(
+        directory_rows,
+        start=5,
+    ):
+        status = "Not checked"
+        if validation_results is not None:
+            status, _ = validation_results.get(
+                company.jobs_url,
+                ("Manual required (not checked)", company.jobs_url),
+            )
+        values = [
+            company.company,
+            category,
+            company.sector,
+            company.priority,
+            company.careers_url,
+            company.jobs_url,
+            company.source_type,
+            company.india_jobs,
+            status,
+            checked_on if validation_results is not None else None,
+        ]
+        for column, value in enumerate(values, start=1):
+            cell = sheet.cell(row_index, column, value)
+            cell.font = Font(name="Aptos", size=9, color="1F2937")
+            cell.alignment = Alignment(wrap_text=True, vertical="top")
+
+        company_cell = sheet.cell(row_index, 1)
+        company_cell.hyperlink = f"#'{category}'!A{source_row}"
+        company_cell.style = "Hyperlink"
+        company_cell.alignment = Alignment(wrap_text=True, vertical="top")
+        for column in (5, 6):
+            cell = sheet.cell(row_index, column)
+            if cell.value:
+                cell.hyperlink = str(cell.value)
+                cell.style = "Hyperlink"
+                cell.alignment = Alignment(wrap_text=True, vertical="top")
+        sheet.cell(row_index, 10).number_format = "yyyy-mm-dd"
+        sheet.row_dimensions[row_index].height = 48
+
+    final_row = len(directory_rows) + 4
+    table = Table(
+        displayName=COMPANY_DIRECTORY_TABLE_NAME,
+        ref=f"A4:J{final_row}",
+    )
+    table.tableStyleInfo = TableStyleInfo(
+        name="TableStyleMedium2",
+        showFirstColumn=False,
+        showLastColumn=False,
+        showRowStripes=True,
+        showColumnStripes=False,
+    )
+    sheet.add_table(table)
+    sheet.freeze_panes = "A5"
+
+    widths = {
+        "A": 31,
+        "B": 23,
+        "C": 28,
+        "D": 12,
+        "E": 48,
+        "F": 54,
+        "G": 31,
+        "H": 18,
+        "I": 43,
+        "J": 15,
+    }
+    for column, width in widths.items():
+        sheet.column_dimensions[column].width = width
+
+    row_range = f"A5:J{final_row}"
+    status_range = f"I5:I{final_row}"
+    sheet.conditional_formatting.add(
+        row_range,
+        FormulaRule(
+            formula=['LEFT($I5,12)="Inaccessible"'],
+            fill=PatternFill("solid", fgColor="FEE2E2"),
+            stopIfTrue=True,
+        ),
+    )
+    sheet.conditional_formatting.add(
+        row_range,
+        FormulaRule(
+            formula=['LEFT($I5,15)="Manual required"'],
+            fill=PatternFill("solid", fgColor="DBEAFE"),
+            stopIfTrue=True,
+        ),
+    )
+    sheet.conditional_formatting.add(
+        status_range,
+        FormulaRule(
+            formula=['LEFT($I5,10)="Accessible"'],
+            fill=PatternFill("solid", fgColor="DCFCE7"),
+        ),
+    )
+
+    sheet.cell(4, 1).comment = Comment(
+        "Click the company name to jump to its detailed category row.",
+        "User",
+    )
+    sheet.cell(4, 9).comment = Comment(
+        "Automated reachability result; manual does not necessarily mean inaccessible.",
+        "User",
+    )
+    sheet.sheet_properties.pageSetUpPr.fitToPage = True
+    sheet.page_setup.orientation = "landscape"
+    sheet.page_setup.fitToWidth = 1
+    sheet.page_setup.fitToHeight = 0
+    sheet.print_title_rows = "1:4"
+    sheet.oddFooter.center.text = "Company Search Directory"
+    sheet.oddFooter.right.text = "Page &P of &N"
+
+
 def _populate_coverage_sheet(workbook: Workbook) -> None:
     sheet = workbook["Coverage"]
     sheet.sheet_view.showGridLines = False
@@ -3313,6 +3795,7 @@ def build_workbook(
     _validate_catalog()
     workbook = Workbook()
     workbook.active.title = "Coverage"
+    workbook.create_sheet(COMPANY_DIRECTORY_SHEET_NAME)
     for sheet_name in CATEGORY_REGISTRIES:
         workbook.create_sheet(sheet_name)
     for sheet_name, companies in CATEGORY_REGISTRIES.items():
@@ -3322,11 +3805,15 @@ def build_workbook(
             companies,
             validation_results=validation_results,
         )
+    _populate_company_directory_sheet(
+        workbook,
+        validation_results=validation_results,
+    )
     _populate_coverage_sheet(workbook)
     _add_portal_alert_pilot_sheet(workbook, linkedin_data)
     if linkedin_data is not None:
         add_linkedin_sheets(workbook, linkedin_data)
-    workbook.active = 0
+    workbook.active = workbook.sheetnames.index(COMPANY_DIRECTORY_SHEET_NAME)
     workbook.calculation.fullCalcOnLoad = True
     workbook.calculation.forceFullCalc = True
     workbook.calculation.calcMode = "auto"
@@ -3383,11 +3870,52 @@ def verify_workbook(
 ) -> None:
     _validate_catalog()
     workbook = load_workbook(output_path, data_only=False)
-    expected_sheets = ["Coverage", *CATEGORY_REGISTRIES, PORTAL_ALERT_SHEET_NAME]
+    expected_sheets = [
+        "Coverage",
+        COMPANY_DIRECTORY_SHEET_NAME,
+        *CATEGORY_REGISTRIES,
+        PORTAL_ALERT_SHEET_NAME,
+    ]
     if linkedin_data is not None:
         expected_sheets.extend(LINKEDIN_SHEET_NAMES)
     if workbook.sheetnames != expected_sheets:
         raise ValueError(f"Unexpected worksheets: {workbook.sheetnames}")
+
+    directory = workbook[COMPANY_DIRECTORY_SHEET_NAME]
+    expected_directory_rows = sum(
+        len(companies) for companies in CATEGORY_REGISTRIES.values()
+    ) + 4
+    if (
+        directory.max_row != expected_directory_rows
+        or directory.max_column != len(COMPANY_DIRECTORY_HEADERS)
+    ):
+        raise ValueError("Unexpected Company Directory dimensions")
+    if directory.auto_filter.ref is not None:
+        raise ValueError("Worksheet-level filter conflicts with Company Directory table")
+    if COMPANY_DIRECTORY_TABLE_NAME not in directory.tables:
+        raise ValueError("Company Directory table is missing")
+    if directory.tables[COMPANY_DIRECTORY_TABLE_NAME].ref != (
+        f"A4:J{expected_directory_rows}"
+    ):
+        raise ValueError("Unexpected Company Directory table range")
+    if [
+        directory.cell(4, column).value
+        for column in range(1, directory.max_column + 1)
+    ] != COMPANY_DIRECTORY_HEADERS:
+        raise ValueError("Company Directory headers are inconsistent")
+    directory_names = [
+        str(directory.cell(row, 1).value)
+        for row in range(5, expected_directory_rows + 1)
+    ]
+    if directory_names != sorted(directory_names, key=str.casefold):
+        raise ValueError("Company Directory is not sorted by company")
+    for row in range(5, expected_directory_rows + 1):
+        for column in (1, 5, 6):
+            if not directory.cell(row, column).hyperlink:
+                raise ValueError(
+                    f"Missing Company Directory hyperlink at "
+                    f"{directory.cell(row, column).coordinate}"
+                )
 
     seen: set[str] = set()
     for sheet_name, companies in CATEGORY_REGISTRIES.items():
@@ -3437,6 +3965,8 @@ def verify_workbook(
                 )
     if len(seen) != sum(len(items) for items in CATEGORY_REGISTRIES.values()):
         raise ValueError("Unique company total does not reconcile")
+    if {name.casefold() for name in directory_names} != seen:
+        raise ValueError("Company Directory does not reconcile to category tabs")
 
     pilot = workbook[PORTAL_ALERT_SHEET_NAME]
     expected_pilot_rows = len(PORTAL_ALERT_PILOT) + 4
@@ -3474,7 +4004,7 @@ def verify_workbook(
         raise ValueError(f"Formula errors found: {formula_errors[:10]}")
     if linkedin_data is not None:
         verify_linkedin_sheets(workbook, linkedin_data)
-    expected_table_count = len(CATEGORY_REGISTRIES) + 1
+    expected_table_count = len(CATEGORY_REGISTRIES) + 2
     if linkedin_data is not None:
         expected_table_count += len(LINKEDIN_TABLE_NAMES)
     _verify_open_xml_filters(
@@ -3581,6 +4111,7 @@ def render_generic_sheet_preview(
     sheet = workbook[sheet_name]
     table_sheet = (
         sheet_name in LINKEDIN_TABLE_NAMES
+        or sheet_name == COMPANY_DIRECTORY_SHEET_NAME
         or sheet_name == PORTAL_ALERT_SHEET_NAME
     )
     row_limit = min(sheet.max_row, 16) if table_sheet else sheet.max_row
@@ -3674,7 +4205,11 @@ def render_preview(output_path: Path, preview_path: Path, *, sheet_name: str) ->
     if sheet_name == "Coverage":
         render_coverage_preview(output_path, preview_path)
         return
-    if sheet_name in LINKEDIN_SHEET_NAMES or sheet_name == PORTAL_ALERT_SHEET_NAME:
+    if (
+        sheet_name in LINKEDIN_SHEET_NAMES
+        or sheet_name == COMPANY_DIRECTORY_SHEET_NAME
+        or sheet_name == PORTAL_ALERT_SHEET_NAME
+    ):
         render_generic_sheet_preview(
             output_path,
             preview_path,
@@ -3949,7 +4484,12 @@ def main() -> int:
             sheet_name="Product Companies",
         )
     if args.preview_dir:
-        preview_sheets = ["Coverage", *CATEGORY_REGISTRIES, PORTAL_ALERT_SHEET_NAME]
+        preview_sheets = [
+            "Coverage",
+            COMPANY_DIRECTORY_SHEET_NAME,
+            *CATEGORY_REGISTRIES,
+            PORTAL_ALERT_SHEET_NAME,
+        ]
         if linkedin_data is not None:
             preview_sheets.extend(LINKEDIN_SHEET_NAMES)
         for sheet_name in preview_sheets:

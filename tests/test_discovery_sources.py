@@ -178,6 +178,90 @@ class DiscoverySourceTests(unittest.TestCase):
         self.assertEqual(matches[1].match_type, "capability_description_match")
         self.assertGreater(matches[0].match_score, matches[1].match_score)
 
+    def test_infosys_dynamic_catalog_returns_default_machine_learning_match(self):
+        infosys_payload = [
+            {
+                "postingTitle": "Senior Machine Learning Engineer",
+                "createdOn": "2026-08-22T11:37:39.968",
+                "location": "HYDERABAD",
+                "minExperienceLevel": 5,
+                "maxExperienceLevel": 8,
+                "referenceCode": "INFSYS-EXTERNAL-251525",
+                "postingId": 249625,
+                "technicalRequirement": "Machine Learning and NLP development",
+                "rolesResponsibilities": "Design, develop, and deploy ML solutions.",
+                "preferredSkills": "Generative AI, Microsoft LUIS, NLP",
+                "functionalArea": "Data and Analytics",
+                "expiryDate": "2026-09-30T00:00:00",
+            },
+            {
+                "postingTitle": "SAP Finance Consultant",
+                "createdOn": "2026-09-10T09:00:00",
+                "location": "HYDERABAD",
+                "minExperienceLevel": 5,
+                "maxExperienceLevel": 8,
+                "referenceCode": "INFSYS-EXTERNAL-OTHER",
+                "technicalRequirement": "SAP finance configuration",
+                "expiryDate": "2026-10-30T00:00:00",
+            },
+        ]
+
+        def handler(request):
+            if request.url.host == "intapgateway.infosysapps.com":
+                self.assertEqual(request.url.params.get("sourceId"), "1")
+                self.assertEqual(request.url.params.get("searchText"), "ALL")
+                return httpx.Response(200, json=infosys_payload)
+            if request.url.path == "/assets/environments/environment.json":
+                return httpx.Response(
+                    200,
+                    json={
+                        "JobsUnAuthUrl": (
+                            "https://intapgateway.infosysapps.com/"
+                            "careersci/search/intapjbsrch/"
+                        )
+                    },
+                )
+            return httpx.Response(200, text="<html><body><app-root></app-root></body></html>")
+
+        safe, raw = _safe_client(handler)
+        filters = DiscoveryFilters(
+            keyword=(
+                "AI engineer, AI/ML engineer, machine learning engineer, ML engineer, "
+                "AI agent engineer, generative AI engineer, data scientist"
+            ),
+            capability_keywords="artificial intelligence, machine learning, generative AI, NLP",
+            location="Hyderabad",
+            posted_within_days=30,
+            target_experience_min_years=5,
+            target_experience_max_years=8,
+        )
+        try:
+            outcome = GenericPublicDiscovery(safe).discover(
+                SourceConfig(
+                    company="Infosys",
+                    provider="generic",
+                    identifier="",
+                    portal_url="https://career.infosys.com/joblist",
+                ),
+                filters,
+                discovered_at="2026-09-15T00:00:00+05:30",
+            )
+        finally:
+            raw.close()
+
+        matches = filter_and_rank_jobs(outcome.jobs, filters)
+        self.assertEqual(outcome.strategy, "official_company_json", outcome.warning)
+        self.assertEqual(outcome.detected_provider, "infosys")
+        self.assertIn("undocumented", outcome.warning)
+        self.assertEqual(len(outcome.jobs), 2)
+        self.assertEqual([job.title for job in matches], ["Senior Machine Learning Engineer"])
+        self.assertEqual(matches[0].experience_text, "5-8 years")
+        self.assertEqual(matches[0].source_type, "official_company_json")
+        self.assertEqual(
+            matches[0].official_url,
+            "https://career.infosys.com/jobdesc?jobReferenceCode=INFSYS-EXTERNAL-251525",
+        )
+
     def test_public_http_boundary_blocks_private_redirects_and_access_controls(self):
         with self.assertRaises(PublicSourceError):
             validate_public_https_url(
